@@ -1,12 +1,17 @@
 Package: volta
-Title: What the Package Does (One Line, Title Case)
-Version: 0.0.0.9000
-Authors@R: 
-    person(given = "First",
-           family = "Last",
-           role = c("aut", "cre"),
-           email = "first.last@example.com")
-Description: What the package does (one paragraph).
-License: What license it uses
-Encoding: UTF-8
+Title: For Flow Cytometers, Calculate Minimum per-Channel Voltage for Optimal
+  Resolution Sensitivity
+Version: 0.1.0
+Authors@R: person("Jim", "Java", email = "priscian@gmail.com", role = c("aut", "cre"))
+Description: Flow cytometers: calculate minimum per-channel voltage for optimal
+  resolution sensitivity to dim vs. unstained events.
+Depends: R (>= 3.5.0), dtplyr, rio, purrr, janitor, naniar, rlist, strucchange,
+  segmented, colorscience, jjmisc
+Imports: data.table, plyr, R.utils
+Suggests: knitr, testthat
+Remotes: github::priscian/jjmisc, github::skgrange/threadr
+VignetteBuilder: knitr
+License: Artistic-2.0
 LazyData: true
+Encoding: UTF-8
+RoxygenNote: 6.1.1
