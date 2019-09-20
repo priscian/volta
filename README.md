@@ -19,7 +19,7 @@ library(volta)
 test_volta()
 ```
 
-![Some major monthly global average temperature time series.](inst/images/001 - Maecker & Trotter 2006 \(sheet 1\).png)
+![Some major monthly global average temperature time series.](<inst/images/001 - Maecker & Trotter 2006 (sheet 1).png>)
 
 Here's the test code in detail:
 ```
