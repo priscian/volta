@@ -19,7 +19,7 @@ library(volta)
 test_volta()
 ```
 
-![Some major monthly global average temperature time series.](inst/images/001 - Maecker & Trotter 2006 (sheet 1).png)
+![Some major monthly global average temperature time series.](inst/images/001 - Maecker & Trotter 2006 \(sheet 1\).png)
 
 Here's the test code in detail:
 ```
@@ -45,6 +45,6 @@ print(v2006)
 ### More information
 *volta* is presented here as a working beta. For more information on what the package offers, check out
 ```
-library(help = climeseries)
+library(help = volta)
 ```
 from the R command line.
