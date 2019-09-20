@@ -19,6 +19,8 @@ library(volta)
 test_volta()
 ```
 
+This will produce plots and data frames containing the minimum volatge for each channel.
+
 ![Some major monthly global average temperature time series.](<inst/images/001 - Maecker & Trotter 2006 (sheet 1).png>)
 
 Here's the test code in detail:
