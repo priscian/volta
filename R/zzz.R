@@ -1,5 +1,5 @@
 .onLoad <- function(...)
 {
-  ## To prevent an error while loading "timeSeries":
-  #setGeneric("is.unsorted") # Remove this when error is fixed.
+  #assign("%_%", plinth::`%_%`, envir = .GlobalEnv)
+  #.reload_all("plinth", redocument = FALSE)
 }
