@@ -1,11 +1,11 @@
 #' @export
 test_volta <- function()
 {
-  cordon(get_peak2_data, path = system.file("extdata", package = "volta"), envir = globalenv(), file_path = paste(dataDir, "peak2-historical.RData", sep = "/"), variables = c("p2", "l"), timestamp... = list(use_seconds = TRUE), action = "run")
-  #l <- get_peak2_data(path = system.file("extdata/Peak2 Overview 122909.xlsx", package = "volta"))
+  #cordon(get_peak2_data, path = system.file("extdata", package = "volta"), envir = globalenv(), file_path = paste(dataDir, "peak2-historical.RData", sep = "/"), variables = c("p2", "l"), timestamp... = list(use_seconds = TRUE), action = "run")
+  l <- get_peak2_data(path = system.file("extdata/Peak2 Overview 122909.xlsx", package = "volta"))
 
   ## Plot historical Peak 2 data.
-  cordon(plot_peak2_data, x = l, image_dir = "report/report_" %_% make_current_timestamp("%Y%m%d"), save_png = FALSE, envir = globalenv(), file_path = paste(dataDir, "peak2-historical-changepoints.RData", sep = "/"), variables = NULL, timestamp... = list(use_seconds = TRUE), action = "skip")
+  #cordon(plot_peak2_data, x = l, image_dir = "report/report_" %_% make_current_timestamp("%Y%m%d"), save_png = FALSE, envir = globalenv(), file_path = paste(dataDir, "peak2-historical-changepoints.RData", sep = "/"), variables = NULL, timestamp... = list(use_seconds = TRUE), action = "run")
   v <- plot_peak2_data(x = l)
 
   print(v)
