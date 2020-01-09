@@ -322,7 +322,8 @@ plot_peak2_data <- function(
 
               cp <- which(rev(p) <= zeros_threshold)[1]
 
-              list(x = zz[[i]]$voltage[cp], y = trans_fun(drop(plinth::interpNA(zz[[i]][[i]], "fmm"))[cp]))
+              #list(x = zz[[i]]$voltage[cp], y = trans_fun(drop(plinth::interpNA(zz[[i]][[i]], "linear"))[cp]))
+              list(x = zz[[i]]$voltage[cp], y = approx(x = x$voltage, y = x[[i]], xout = zz[[i]]$voltage)$y[cp])
             }, simplify = FALSE)
         }
 
