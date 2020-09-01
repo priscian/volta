@@ -3,6 +3,7 @@
 export(get_peak2_data)
 export(plot_peak2_data)
 export(test_volta)
+import(data.table)
 importFrom(magrittr,"%>%")
 importFrom(plinth,"%_%")
 importFrom(plinth,cordon)

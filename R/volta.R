@@ -29,6 +29,7 @@
 #'   list.dirs... = list(pattern = "(Waldorf 030220|Z01)$", recursive = TRUE))
 #' }
 
+#' @import data.table
 #' @importFrom magrittr %>%
 #' @importFrom plinth %_% cordon is_invalid dataframe
 
