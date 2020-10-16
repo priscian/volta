@@ -185,6 +185,8 @@ plot_peak2_data <- function(
   image_dir = report_dir,
   trans_fun = log10, # Also possibly 'identity'
   replace_with_na_condition = ~ is.infinite(.x) | is.nan(.x),
+  max_cv_threshold = Inf, # Make anomalously high-valued CVs into missings
+  keep_longest_continuous = FALSE,
   remove_empty_cols = TRUE,
   save_png = FALSE, png... = list(),
   plot_series... = list(),
@@ -192,6 +194,7 @@ plot_peak2_data <- function(
   plot_derivative = FALSE,
   points... = list(),
   debug = FALSE,
+  round_to_nearest_volts = 1, # Round to nearest multiple of this value
   xlsx_expression = NULL
 )
 {
@@ -223,20 +226,44 @@ plot_peak2_data <- function(
 
       cat("Processing object # ", currentIndex, ", ", basename(experiment_name), "\n", sep = ""); flush.console()
 
-      x <- a %>% dplyr::mutate_at(dplyr::vars(2:NCOL(.)), trans_fun) %>%
-        naniar::replace_with_na_all(condition = replace_with_na_condition)
+      y <- a %>%
+        naniar::replace_with_na_all(condition = eval(substitute(~ .x > MCT, list(MCT = max_cv_threshold)))) %>%
+        dplyr::mutate_at(dplyr::vars(2:NCOL(.)), trans_fun) %>%
+        naniar::replace_with_na_all(condition = replace_with_na_condition) %>%
+        dplyr::mutate_at(dplyr::vars(2:NCOL(.)),
+          function(b)
+          {
+            if (keep_longest_continuous) {
+              ## Keep all values in rightmost stretch
+              # ii <- b[b %>% plinth::na_unwrap()] %>% is.na %>% `!` %>% rle %>% `$`("lengths") %>% plinth::cum_sum() %>% `c`(1, .)
+              # i <- (ii[length(ii) - 1]):(length(b))
+              # bb <- rep(NA_real_, length(b))
+              # bb[i] <- b[i]
+
+              ## Keep all values including + after longest stretch
+              r <- b[b %>% plinth::na_unwrap()] %>% is.na %>% `!` %>% rle
+              i <- ((c(0, r$lengths) %>% cumsum)[r$lengths[r$values] %>% which.max] + 1):(length(b))
+              bb <- rep(NA_real_, length(b))
+              bb[i] <- b[i]
+            }
+            else {
+              bb <- b
+            }
+
+            bb
+          })
 
       if (remove_empty_cols) {
-        notAllNas <- sapply(x[, 2:NCOL(x)], function(i) !all(is.na(i)))
+        notAllNas <- sapply(y[, 2:NCOL(y)], function(i) !all(is.na(i)))
         if (!all(notAllNas)) {
           color <- color[notAllNas]
-          x <- janitor::remove_empty(x, which = c("cols"))
+          y <- janitor::remove_empty(y, which = c("cols"))
 
           warning("Channel(s) ", paste(names(notAllNas)[!notAllNas], sep = ","), " has invalid CVs for all voltages.", immediate. = TRUE)
         }
       }
 
-      series <- names(x)[2:NCOL(x)]
+      series <- names(y)[2:NCOL(y)]
 
       Error <- function(e) {
         cat("Fatal error: ", e$message, ". Aborting & continuing next analysis.\n", sep = ""); flush.console()
@@ -249,7 +276,7 @@ plot_peak2_data <- function(
         if (save_png) do.call(grDevices::png, utils::modifyList(pngArgs, list(filename = paste(image_dir, sprintf("%03d", currentIndex) %_% " - " %_% basename(experiment_name) %_% ".png", sep = "/")), keep.null = TRUE))
 
         plot_seriesArgs <- list(
-          x = x,
+          x = y,
           series = series,
           x_var = "voltage",
           log = "",
@@ -267,7 +294,7 @@ plot_peak2_data <- function(
         ## Find smoothed series & derivative(s).
         deriv <- 1:2
         create_smooth_variablesArgs <- list(
-          x = x,
+          x = y,
           series = NULL,
           x_var = "voltage",
           pad_by = 3,
@@ -308,10 +335,20 @@ plot_peak2_data <- function(
               plinth::plot_series(dfR, "R", x_var = "voltage", xlab = "PMT Voltage", ylab = "Radius of Curvature", main = "Radius of Curvature", col = color[series == i], lwd = 1, conf_int = TRUE, trend = FALSE, segmented = FALSE, ylim = NULL)
             }
 
-            knee <- inflection::uik(zz[[i]]$voltage, zz[[i]][[i]])
-            cp <- plinth::nearest(zz[[i]]$voltage, knee[1]) # Could just be 'cp <- knee[1]'.
+            x1 <- zz[[i]]$voltage; y1 <- zz[[i]][[i]]
+            checkCurve <- inflection::check_curve(x1, y1)
+            if (checkCurve$index == 1) { # This works! I should figure out why....
+              bese <- inflection::bese(x1, y1, index = checkCurve$index, doparallel = FALSE)
+              j <- x1 >= bese$iplast
+              x1 <- x1[j]; y1 <- y1[j]
+            }
+            knee <- inflection::uik(x1, y1)
+            cp <- plinth::nearest(x1, knee[1]) # Could just be 'cp <- knee[1]'.
 
-            r <- list(x = zz[[i]]$voltage[cp], y = approx(x = x$voltage, y = x[[i]], xout = zz[[i]]$voltage)$y[cp])
+            r <- list(
+              x = zz[[i]]$voltage[cp] %>% plyr::round_any(round_to_nearest_volts),
+              y = approx(x = y$voltage, y = y[[i]], xout = zz[[i]]$voltage)$y[cp]
+            )
 
             r
           }, simplify = FALSE)
@@ -350,7 +387,7 @@ plot_peak2_data <- function(
       rv <- rv %>%
       tibble::rownames_to_column(var = "channel") %>%
       dplyr::mutate(
-        PMT_voltage = PMT_voltage %>% round(0),
+        PMT_voltage = PMT_voltage,
         log10_CV = log10_CV %>% round(2)
       )
 
@@ -365,15 +402,7 @@ plot_peak2_data <- function(
     rio::export(rr, fileName, rowNames = FALSE)
 
     wb <- xlsx::loadWorkbook(fileName)
-    if (!is.null(xlsx_expression)) {
-      if (is.function(xlsx_expression)) {
-        xlsx_expression()
-      } else if (rlang::is_expression(xlsx_expression)) {
-        rlang::eval_tidy(xlsx_expression)
-      } else if (is.expression(xlsx_expression)) {
-        eval(xlsx_expression)
-      }
-    }
+    plinth::poly_eval(xlsx_expression)
 
     ## Add plots to report.
     if (save_png) {
