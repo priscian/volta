@@ -1,16 +1,16 @@
 Package: volta
 Title: For Flow Cytometers, Calculate Minimum per-Channel Voltage for Optimal
   Resolution Sensitivity
-Version: 0.5.0
+Version: 0.6.0
 Authors@R: person("Jim", "Java", email = "priscian@gmail.com", role = c("aut", "cre"))
 Description: Flow cytometers: calculate minimum per-channel voltage for optimal
   resolution sensitivity to dim vs. unstained events.
 Depends: R (>= 3.5.0)
-Imports: plinth, flowCore, data.table, inflection
-Remotes: github::priscian/plinth
+Imports: flowCore, data.table, inflection, readr
+Remotes: github::priscian/plinth, github::priscian/flowpipe
 VignetteBuilder: knitr
 License: Artistic-2.0
 LazyData: true
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.1.0
+RoxygenNote: 7.1.1

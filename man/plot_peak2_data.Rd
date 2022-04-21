@@ -10,14 +10,20 @@ plot_peak2_data(
   image_dir = report_dir,
   trans_fun = log10,
   replace_with_na_condition = ~is.infinite(.x) | is.nan(.x),
+  max_cv_threshold = Inf,
+  keep_longest_continuous = FALSE,
   remove_empty_cols = TRUE,
   save_png = FALSE,
   png... = list(),
+  default_color_fun = colorspace::rainbow_hcl,
+  x_var_lab = c(PMT_voltage = "PMT Voltage"),
+  y_var_lab = c(log10_CV = expression(paste(log[10], " CV"))),
   plot_series... = list(),
   create_smooth_variables... = list(),
   plot_derivative = FALSE,
   points... = list(),
   debug = FALSE,
+  round_to_nearest_volts = 1,
   xlsx_expression = NULL
 )
 }

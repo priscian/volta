@@ -6,6 +6,11 @@
 \usage{
 get_peak2_data(
   path = ".",
+  cv_keyword_fmt = "$P\%sV",
+  analysis_channels_re = stringr::regex("^(?!(fsc|ssc|time).*)", ignore_case = TRUE),
+  use_spillover_channels = FALSE,
+  create_pmm_data = FALSE,
+  prepare_augmented_fcs_data... = list(),
   list.dirs... = list(),
   list.files... = list(),
   read.FCS... = list(),
@@ -19,7 +24,7 @@ get_peak2_data(
 \arguments{
 \item{path}{Path to directory holding the Peak 2 FCS files for analysis.}
 
-\item{list.dirs...}{An optional list of arguments to \code{\link[base:list.dirs]{base::list.dirs()}}, for finer selection control of the subdirectories of \code{path}.}
+\item{list.dirs...}{An optional list of arguments to \code{\link[base:list.files]{base::list.dirs()}}, for finer selection control of the subdirectories of \code{path}.}
 
 \item{list.files...}{An optional list of arguments to \code{\link[base:list.files]{base::list.files()}}, for finer selection control of Peak 2 FCS files under \code{path}.}
 

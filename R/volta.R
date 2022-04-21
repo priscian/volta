@@ -32,10 +32,21 @@
 #' @import data.table
 #' @importFrom magrittr %>%
 #' @importFrom plinth %_% cordon is_invalid dataframe
+#' @importFrom flowpipe `colnames<-`
+
+## FCS file format: https://en.wikipedia.org/wiki/Flow_Cytometry_Standard
 
 #' @export
 get_peak2_data <- function(
   path = ".",
+  ## These calcs typically rely on data stored in ad-hoc keywords for parameter n, e.g. PnV (_V_oltage), PnG (_G_ain):
+  cv_keyword_fmt = "$P%sV",
+  ## 'analysis_channels_re' is one of: 1-element regex/character vector; 2+-element vector of channel names
+  analysis_channels_re = stringr::regex("^(?!(fsc|ssc|time).*)", ignore_case = TRUE),
+  ## 'use_spillover_channels' overrides 'analysis_channels_re' if TRUE; if so, use channel names from spillover matrix
+  use_spillover_channels = FALSE,
+  create_pmm_data = FALSE,
+  prepare_augmented_fcs_data... = list(),
   list.dirs... = list(),
   list.files... = list(),
   read.FCS... = list(),
@@ -69,39 +80,187 @@ get_peak2_data <- function(
     {
       list.filesArgs$path = i
       list.filesArgs <- utils::modifyList(list.filesArgs, list.files...)
-      filePaths <- do.call(list.files, list.filesArgs)
+      filePaths <- do.call(plinth::list_files, list.filesArgs)
 
       filePaths
     }, simplify = FALSE) %>% purrr::compact() # Remove blank elements
 
+  ## N.B. TODO: Allow review of directories & files here w/ interactive go/no-go.
+  #browser()
   nmRe <- "\b?([2-9][0-9][0-9])\b?"
   colorRe <- sprintf("(%s)", paste(names(color_nm_map), collapse = "|"))
 
   p2 <- sapply(ff,
     function(i)
     {
-      r <- sapply(i,
+      ii <- i
+      if (create_pmm_data) {
+        tictoc::tic("Make PMM files")
+
+        ## Make augmented flowCore::flowFrame objects.
+        pmm_files <- plinth::psapply(i,
+          function(j)
+          {
+            prepare_augmented_fcs_dataArgs <- list(
+              x = j,
+              b = 1/150,
+              data_dir = sprintf("./data/%s", j %>% dirname %>% basename),
+              remove_outliers = FALSE,
+              excluded_channels_re = stringr::regex("time|event_length|(width$)", ignore_case = TRUE),
+              multisect... = list(max_sample = 5000),
+              outfile_suffix = NULL,
+              outfile_prefix = expression(outfile_prefix <- paste0(x %>% dirname %>% basename, "-")),
+              overwrite = FALSE
+            )
+            prepare_augmented_fcs_dataArgs <- utils::modifyList(prepare_augmented_fcs_dataArgs, prepare_augmented_fcs_data..., keep.null = TRUE)
+
+            pmm_file <- do.call(flowpipe::prepare_augmented_fcs_data, prepare_augmented_fcs_dataArgs)
+
+            pmm_file
+          }, simplify = FALSE)
+
+        ii <- pmm_files
+
+        tictoc::toc()
+      }
+
+      r <- sapply(ii,
         function(j)
         {
-          read.FCSArgs <- list(
-            filename = j
-          )
-          read.FCSArgs <- utils::modifyList(read.FCSArgs, read.FCS...)
-          fcs <- do.call(flowCore::read.FCS, read.FCSArgs)
+          fcs <- stain_groups <- NULL
+          if (!create_pmm_data) {
+            local({
+              read.FCSArgs <- list(
+                filename = j,
+                truncate_max_range = FALSE,
+                transformation = FALSE
+              )
+              read.FCSArgs <- utils::modifyList(read.FCSArgs, read.FCS...)
+              fcs <<- do.call(flowCore::read.FCS, read.FCSArgs)
+            })
+          } else {
+            local({
+              load(j)
+              fcs <<- rlang::duplicate(tff, shallow = FALSE)
+              remove(tff)
 
-          allChannelNames <- flowCore::description(fcs)[grep("^\\$P\\d+N", trimws(names(flowCore::description(fcs))), value = TRUE, perl = TRUE)]
-          descriptionNames <- stringr::str_match(names(allChannelNames)[unlist(allChannelNames) %in% trimws(colnames(flowCore::description(fcs)$SPILL))], "^(.*?)N$")[, 2]
+              exprs_fcs <- flowCore::exprs(fcs)
+              pmm <- attr(exprs_fcs, "plus_minus_matrix")
 
-          channelVoltages <- flowCore::description(fcs)[descriptionNames %_% "V"]
-          channelNames <- flowCore::description(fcs)[descriptionNames %_% "N"]
+              ## Separate events as stained/unstained for each channel
+              stain_groups <<- sapply(colnames(pmm),
+                function(a)
+                {
+                  pm <- pmm %>% dplyr::select(!!a) %>% dplyr::pull()
+                  if (!is.factor(pm))
+                    return (NULL)
+                  pm <- pm %>%
+                    forcats::fct_collapse(
+                      unstained = c("-", "d"),
+                      stained = c("+", "++")
+                    )
 
-          e <- flowCore::exprs(fcs)[, unlist(channelNames)]
+                  r <- exprs_fcs[, a] %>% split(pm)
+                  if (min_zero)
+                    r <- sapply(r, function(k) k - min(k, na.rm = TRUE))
+
+                  r
+                }, simplify = FALSE) %>% purrr::compact()
+            })
+          }
+
+          keywords <- fcs %>% flowCore::keyword()
+          pData <- fcs %>% flowCore::parameters() %>% flowCore::pData() %>%
+            tibble::rownames_to_column(var = "parameter") %>%
+            dplyr::mutate(
+              quantity_keyword = sprintf(cv_keyword_fmt, stringr::str_extract(parameter, "\\d+$")),
+              desc = dplyr::case_when(is.na(desc) ~ name, TRUE ~ desc)
+            ) %>%
+            dplyr::left_join(
+              plinth::dataframe(
+                parameter = .$parameter,
+                quantity =
+                  sapply(.$quantity_keyword,
+                    function(a) { r <- keywords[[a]]; if (is_invalid(r)) r <- NA; r })
+              ), by = "parameter"
+            ) %>%
+            dplyr::mutate(quantity = quantity %>% readr::parse_number())
+
+          ## 'pData' should now look something like this:
+          #   parameter              name              desc  range minRange maxRange quantity_keyword quantity
+          # 1        $P1             FSC-A             FSC-A 262144     0.00   262143             $P1V      450
+          # 2        $P2             SSC-A             SSC-A 262144     0.00   262143             $P2V      200
+          # 3        $P3   Blue B 515/20-A   Blue B 515/20-A 262144   -63.84   262143             $P3V      250
+          # 4        $P4   Blue A 710/50-A   Blue A 710/50-A 262144  -111.00   262143             $P4V      250
+          # 5        $P5 Violet H 450/50-A Violet H 450/50-A 262144   -40.18   262143             $P5V      250
+          # 6        $P6 Violet G 550/40-A Violet G 550/40-A 262144   -48.02   262143             $P6V      250
+          # 7        $P7 Violet F 560/40-A Violet F 560/40-A 262144   -60.76   262143             $P7V      250
+          # 8        $P8 Violet E 585/42-A Violet E 585/42-A 262144   -48.02   262143             $P8V      250
+          # 9        $P9 Violet D 605/40-A Violet D 605/40-A 262144   -58.80   262143             $P9V      250
+          # 10      $P10 Violet C 660/40-A Violet C 660/40-A 262144   -56.84   262143            $P10V      250
+          # 11      $P11 Violet B 705/70-A Violet B 705/70-A 262144   -73.50   262143            $P11V      250
+          # 12      $P12 Violet A 780/60-A Violet A 780/60-A 262144   -58.80   262143            $P12V      250
+          # 13      $P13    Red C 660/20-A    Red C 660/20-A 262144   -34.16   262143            $P13V      250
+          # 14      $P14    Red B 710/50-A    Red B 710/50-A 262144   -31.11   262143            $P14V      250
+          # 15      $P15    Red A 780/60-A    Red A 780/60-A 262144   -44.53   262143            $P15V      250
+          # 16      $P16  Green E 575/25-A  Green E 575/25-A 262144   -47.30   262143            $P16V      250
+          # 17      $P17  Green D 610/20-A  Green D 610/20-A 262144   -38.70   262143            $P17V      250
+          # 18      $P18  Green C 660/40-A  Green C 660/40-A 262144   -49.88   262143            $P18V      250
+          # 19      $P19  Green B 710/50-A  Green B 710/50-A 262144   -48.16   262143            $P19V      250
+          # 20      $P20  Green A 780/40-A  Green A 780/40-A 262144   -47.30   262143            $P20V      250
+          # 21      $P21              Time              Time 262144     0.00   262143            $P21V       NA
+
+          ## Now pick out the relevant channels.
+          ## Often, the spillover matrix uses those channel names:
+          # names(keywords) %>% stringr::str_subset(stringr::regex("spill", ignore_case = TRUE)) %>% `[[`(keywords, .) %>% colnames
+
+          ## Check for spillover matrix
+          spilloverKey <- names(keywords) %>% stringr::str_subset(stringr::regex("spill", ignore_case = TRUE))
+          hasSpilloverMatrix <- spilloverKey %>% `[[`(keywords, .) %>% is.matrix
+          spilloverChannels <- NULL
+          if (hasSpilloverMatrix)
+            spilloverChannels <- spilloverKey %>% `[[`(keywords, .) %>% colnames
+
+          ## Assume that 'pData$desc' has the channel info of interest:
+          pData$desc[is.na(pData$desc)] <- pData$name[is.na(pData$desc)]
+          description <- fcs %>% flowCore::description()
+
+          if (!is.null(use_spillover_channels) && use_spillover_channels) {
+            if (!hasSpilloverMatrix) {
+              warning("Spillover matrix not found. Defaulting to 'analysis_channels_re'", immediate. = FALSE)
+
+              cvChannels <- NULL
+            } else {
+              cvChannels <- spilloverChannels
+            }
+          }
+
+          if (is.null(use_spillover_channels) || !use_spillover_channels || is.null(cvChannels)) {
+            cvChannels <- stringr::str_subset(pData$desc, analysis_channels_re)
+          }
+
+          descNameMapFull <- structure(pData$desc, .Names = pData$name)
+          descNameMap <- descNameMapFull[descNameMapFull %in% cvChannels]
+
+          e <- flowCore::exprs(fcs) %>% `colnames<-`(descNameMapFull[colnames(.)]) %>%
+            `[`(, descNameMap)
           if (min_zero)
             e <- plyr::aaply(e, 1, function(k) k - min(k, na.rm = TRUE))
 
-          ee <- e %>% plyr::aaply(2, function(k) { cv_fun(k) * cv_multiplier }) %>% t %>% plinth::dataframe()
-          attr(ee, "channel_voltages") <- unlist(channelVoltages)
-          attr(ee, "experiment_name") <- flowCore::description(fcs)$`EXPERIMENT NAME`
+          if (!is.null(stain_groups))
+            names(stain_groups) <- descNameMapFull[names(stain_groups)]
+
+          ## To calculate Voltration index (VI) or anything involving stained-vs.-unstained comparisons,
+          ##   we need to use the distinct populations in 'stain_groups'.
+
+          quantityMap <- structure(pData$quantity, .Names = pData$desc)
+          # ee <- e %>% plyr::aaply(2, function(k) { cv_fun(data.matrix(k)) * cv_multiplier }) %>% t %>% plinth::dataframe()
+          ee <- sapply(colnames(e),
+            function(a) { cv_fun(unclass(e[, a]), stain_groups = stain_groups[[a]], quantity = quantityMap[a][1]) * cv_multiplier },
+            simplify = FALSE) %>% plinth::dataframe()
+          attr(ee, "channel_quantities") <- structure(pData$quantity, .Names = pData$desc)[colnames(e)]
+          attr(ee, "machine_name") <- keywords$`$CYT`
+          attr(ee, "experiment_name") <- keywords$FILENAME %>% dirname %>% basename
 
           ee
         }, simplify = FALSE)
@@ -110,12 +269,12 @@ get_peak2_data <- function(
       rr <- sapply(r,
         function(j)
         {
-          channel_voltages <- attr(j, "channel_voltages")
-          v <- Reduce(plyr::rbind.fill, sapply(unique(channel_voltages),
+          channel_quantities <- attr(j, "channel_quantities")
+          v <- Reduce(plyr::rbind.fill, sapply(unique(channel_quantities),
             function(k)
             {
-              cbind(voltage = k, j[, channel_voltages %in% k])
-            }, simplify = FALSE)) %>% dplyr::mutate(voltage = as.numeric(plinth::unfactor(voltage)))
+              cbind(quantity = k, j[, channel_quantities %in% k])
+            }, simplify = FALSE)) %>% dplyr::mutate(quantity = as.numeric(plinth::unfactor(quantity)))
 
           v
         }, simplify = FALSE)
@@ -123,12 +282,12 @@ get_peak2_data <- function(
       raw_cv <- Reduce(plyr::rbind.fill, rr)
       rrr <- raw_cv %>%
         naniar::replace_with_na_all(condition = replace_with_na_condition) %>%
-        dplyr::arrange(voltage)
+        dplyr::arrange(quantity)
 
       d <- data.table::data.table(rrr)
       ## Remove voltage duplicates by averaging.
-      #d <- d[, lapply(.SD, mean, na.rm = TRUE), by = .(voltage), .SDcols = tail(colnames(d), -1)]
-      d <- d[, lapply(.SD, function(j) { if (all(is.na(j))) NA_real_ else mean(j, na.rm = TRUE) }), by = .(voltage), .SDcols = tail(colnames(d), -1)]
+      #d <- d[, lapply(.SD, mean, na.rm = TRUE), by = .(quantity), .SDcols = tail(colnames(d), -1)]
+      d <- d[, lapply(.SD, function(j) { if (all(is.na(j))) NA_real_ else mean(j, na.rm = TRUE) }), by = .(quantity), .SDcols = tail(colnames(d), -1)]
       rrr <- d %>% as.data.frame()
 
       ## Add some attributes.
@@ -181,7 +340,7 @@ get_peak2_data <- function(
 #' @export
 plot_peak2_data <- function(
   x,
-  report_dir,
+  report_dir = NULL,
   image_dir = report_dir,
   trans_fun = log10, # Also possibly 'identity'
   replace_with_na_condition = ~ is.infinite(.x) | is.nan(.x),
@@ -189,6 +348,8 @@ plot_peak2_data <- function(
   keep_longest_continuous = FALSE,
   remove_empty_cols = TRUE,
   save_png = FALSE, png... = list(),
+  default_color_fun = colorspace::rainbow_hcl,
+  x_var_lab = c(PMT_voltage = "PMT Voltage"), y_var_lab = c(log10_CV = expression(paste(log[10], " CV"))),
   plot_series... = list(),
   create_smooth_variables... = list(),
   plot_derivative = FALSE,
@@ -201,7 +362,7 @@ plot_peak2_data <- function(
   if (save_png && !dir.exists(image_dir))
     dir.create(image_dir, recursive = TRUE)
 
-  if (!missing(report_dir) && !dir.exists(report_dir))
+  if (!is.null(report_dir) && !dir.exists(report_dir))
     dir.create(report_dir, recursive = TRUE)
 
   pngArgs <- list(
@@ -213,18 +374,21 @@ plot_peak2_data <- function(
   )
   pngArgs <- utils::modifyList(pngArgs, png..., keep.null = TRUE)
 
-  indices <- NULL # NULL for all elements
-  if (is.null(indices))
-    indices <- seq_along(x)
-  currentIndex <- head(indices, 1)
+  x_var_lab <- head(x_var_lab, 1)
+  if (is_invalid(names(x_var_lab)) || trimws(names(x_var_lab)) == "") names(x_var_lab) <- x_var_lab
+  y_var_lab <- head(y_var_lab, 1)
+  if (is_invalid(names(y_var_lab)) || trimws(names(y_var_lab)) == "") names(y_var_lab) <- y_var_lab
 
-  r <- sapply(x[indices],
+  ## Create plotting data set
+  r <- sapply(x,
     function(a)
     {
       color <- plinth::wavelength2col(attr(a, "wavelength"))
+      defaultColor <- default_color_fun(length(color))
+      color[is.na(color)] <- defaultColor[is.na(color)]
       experiment_name <- attr(a, "experiment_name"); if (is_invalid(experiment_name)) experiment_name <- "[no experiment_name]"
 
-      cat("Processing object # ", currentIndex, ", ", basename(experiment_name), "\n", sep = ""); flush.console()
+      cat(sprintf("Processing object: %s\n", experiment_name)); flush.console()
 
       y <- a %>%
         naniar::replace_with_na_all(condition = eval(substitute(~ .x > MCT, list(MCT = max_cv_threshold)))) %>%
@@ -259,7 +423,8 @@ plot_peak2_data <- function(
           color <- color[notAllNas]
           y <- janitor::remove_empty(y, which = c("cols"))
 
-          warning("Channel(s) ", paste(names(notAllNas)[!notAllNas], sep = ","), " has invalid CVs for all voltages.", immediate. = TRUE)
+          warning("Channel(s) ", paste(names(notAllNas)[!notAllNas], sep = ","), " has invalid CVs for all quantities.",
+            immediate. = TRUE)
         }
       }
 
@@ -273,30 +438,26 @@ plot_peak2_data <- function(
       ### Do time-series plotting.
 
       #tryCatch({
-        if (save_png) do.call(grDevices::png, utils::modifyList(pngArgs, list(filename = paste(image_dir, sprintf("%03d", currentIndex) %_% " - " %_% basename(experiment_name) %_% ".png", sep = "/")), keep.null = TRUE))
-
         plot_seriesArgs <- list(
           x = y,
           series = series,
-          x_var = "voltage",
+          x_var = "quantity",
           log = "",
-          xlab = "PMT Voltage", ylab = expression(paste(log[10], " CV")),
-          main = basename(experiment_name),
+          xlab = x_var_lab, ylab = y_var_lab,
+          main = experiment_name,
           dev.new... = list(width = 9.375, height = 7.3),
           col = color, lwd = 1,
           trend = FALSE,
           segmented = FALSE, segmented... = list(breakpoints... = list(h = 3)),
           legend... = list(x = "topright")
         )
-        plot_seriesArgs <- utils::modifyList(plot_seriesArgs, plot_series..., keep.null = TRUE)
-        do.call(plinth::plot_series, plot_seriesArgs)
 
         ## Find smoothed series & derivative(s).
         deriv <- 1:2
         create_smooth_variablesArgs <- list(
           x = y,
           series = NULL,
-          x_var = "voltage",
+          x_var = "quantity",
           pad_by = 3,
           keep_interpolated = TRUE,
           deriv = deriv,
@@ -305,8 +466,11 @@ plot_peak2_data <- function(
           loess... = list(span = 1.0),
           verbose = TRUE
         )
-        create_smooth_variablesArgs <- utils::modifyList(create_smooth_variablesArgs, create_smooth_variables..., keep.null = TRUE)
+        create_smooth_variablesArgs <-
+          utils::modifyList(create_smooth_variablesArgs, create_smooth_variables..., keep.null = TRUE)
+        tictoc::tic("Create smoothed variables")
         z <- do.call(plinth::create_smooth_variables, create_smooth_variablesArgs)
+        tictoc::toc()
 
         create_smooth_variablesArgs <- as.list(args(plinth::create_smooth_variables))
         o <- structure(vector("list", length = length(deriv)), .Names = as.character(deriv))
@@ -323,19 +487,12 @@ plot_peak2_data <- function(
         changepoints_cv <- sapply(series,
           function(i)
           {
-            if (debug) {
-              ## Radius of curvature
-              ## V. https://math.stackexchange.com/questions/690677/is-there-a-name-for-the-point-of-a-exponential-curve-where-the-y-axis-significan/1734110#1734110
-              yp <- zz[[i]][[i %_% o[["1"]]$dv]]; ypp <- zz[[i]][[i %_% o[["2"]]$dv]]
-              R <- ((1 + yp^2)^(3/2)) / abs(ypp)
-              dfR <- dataframe(voltage = zz[[i]]$voltage, R = R)
+            x1 <- zz[[i]]$quantity; y1 <- zz[[i]][[i]]
+            if (any(is.na(y1))) { # This should mostly be false, but isn't always
+              warning("Smoothed variable 'y1' contains some missings.", immediate. = TRUE)
 
-              plinth::plot_series(zz[[i]], i, x_var = "voltage", xlab = "PMT Voltage", ylab = "CV", main = "CV vs. Voltage", col = color[series == i], lwd = 1, conf_int = TRUE, trend = FALSE, segmented = FALSE, ylim = NULL)
-              plinth::plot_series(zz[[i]], i %_% sapply(o, `[[`, "dv"), x_var = "voltage", xlab = "PMT Voltage", ylab = "CV", main = "Derivatives + 95% CI", col = color[series == i], lwd = 1, lty = seq(length(o)), legend... = list(lty = seq(length(o))), conf_int = TRUE, trend = FALSE, segmented = FALSE, ylim = c(-0.0001, 0.0001))
-              plinth::plot_series(dfR, "R", x_var = "voltage", xlab = "PMT Voltage", ylab = "Radius of Curvature", main = "Radius of Curvature", col = color[series == i], lwd = 1, conf_int = TRUE, trend = FALSE, segmented = FALSE, ylim = NULL)
+              y1 <- drop(plinth::interpNA(y1, method = "fmm", unwrap = FALSE))
             }
-
-            x1 <- zz[[i]]$voltage; y1 <- zz[[i]][[i]]
             checkCurve <- inflection::check_curve(x1, y1)
             if (checkCurve$index == 1) { # This works! I should figure out why....
               bese <- inflection::bese(x1, y1, index = checkCurve$index, doparallel = FALSE)
@@ -346,57 +503,72 @@ plot_peak2_data <- function(
             cp <- plinth::nearest(x1, knee[1]) # Could just be 'cp <- knee[1]'.
 
             r <- list(
-              x = zz[[i]]$voltage[cp] %>% plyr::round_any(round_to_nearest_volts),
-              y = approx(x = y$voltage, y = y[[i]], xout = zz[[i]]$voltage)$y[cp]
+              x = zz[[i]]$quantity[cp] %>% plyr::round_any(round_to_nearest_volts),
+              y = approx(x = y$quantity, y = y[[i]], xout = zz[[i]]$quantity)$y[cp]
             )
 
             r
           }, simplify = FALSE)
-
-        pointsArgs <- list(
-          col = "black",
-          pch = 4, cex = 1
-        )
-        pointsArgs <- utils::modifyList(pointsArgs, points..., keep.null = TRUE)
-        dev_null <- sapply(changepoints_cv, function(a) { pointsArgs$x = a; do.call(points, pointsArgs) })
-
-        if (save_png) dev.off()
       #}, error = Error) # Could add 'warning = Error'.
 
-      rv <- purrr::map_dfr(changepoints_cv, dataframe); rownames(rv) <- names(changepoints_cv); colnames(rv) <- c("PMT_voltage", "log10_CV")
+      rv <- purrr::map_dfr(changepoints_cv, dataframe)
+      rownames(rv) <- names(changepoints_cv)
+      colnames(rv) <- c(names(x_var_lab), names(y_var_lab))
 
-      if (plot_derivative) local({
-        zzz <- zz #%>% dplyr::mutate_at(dplyr::vars(2:NCOL(.)), dplyr::funs(!! function(x) trans_fun(x)))
-
-        r <- mapply(combine_groups(list(series, sapply(o, `[[`, "dv")), sep = ""),
-          rep(color, each = length(o)), rep(series, each = length(o)),
-          FUN = function(i, color, s)
-          {
-            if (all(Vectorize(is_invalid)(zzz[[s]][[i]])))
-              return (nop())
-
-            ## Currently not configurable.
-            plinth::plot_series(zzz[[s]], i, x_var = "voltage", log = "", xlab = "PMT Voltage", ylab = "CV", main = "First Derivative + 95% CI", col = color, lwd = 1, conf_int = TRUE, trend = FALSE, segmented = FALSE, ylim = NULL)
-
-            plinth::vline(sprintf("%.1f", changepoints_cv[[s]]$x), abline... = list(col = scales::alpha("black", 0.4)))
-          }, SIMPLIFY = FALSE)
-      })
-
-      currentIndex <<- currentIndex + 1
+      if (plot_derivative) {} # See GitHub history for reimplementation if needed.
 
       rv <- rv %>%
-      tibble::rownames_to_column(var = "channel") %>%
-      dplyr::mutate(
-        PMT_voltage = PMT_voltage,
-        log10_CV = log10_CV %>% round(2)
-      )
+        tibble::rownames_to_column(var = "channel") %>%
+        dplyr::mutate(
+          !!names(x_var_lab) := .data[[names(x_var_lab)]],
+          !!names(y_var_lab) := .data[[names(y_var_lab)]] %>% round(2)
+        )
 
-      rv
+      structure(
+        list(plot_args = plot_seriesArgs, changepoints_cv = changepoints_cv, table = rv, experiment_name = experiment_name),
+        derivatives = tibble::as_tibble(zz)
+      )
     }, simplify = FALSE)
 
+  ## Create plots
+  plyr::l_ply(seq_along(r),
+    function(a)
+    {
+      if (save_png) {
+        do.call(grDevices::png,
+          utils::modifyList(pngArgs,
+            ## N.B. 'sprintf(0)' returns 0-length string for any NULL values; use 'format(NULL)' to output "NULL".
+            list(filename = sprintf("%s/%03d - %s.png", format(image_dir), a, basename(r[[a]]$experiment_name))),
+            keep.null = TRUE)
+        )
+      }
+
+      do.call(plinth::plot_series, r[[a]]$plot_args)
+
+      pointsArgs <- list(
+        col = "black",
+        pch = 4, cex = 1
+      )
+      pointsArgs <- utils::modifyList(pointsArgs, points..., keep.null = TRUE)
+      plyr::l_ply(r[[a]]$changepoints_cv,
+        function(b) { pointsArgs$x = b; do.call(points, pointsArgs) })
+
+      if (save_png) dev.off()
+    })
+
   ## Make Peak 2 report.
-  if (!missing(report_dir)) {
-    rr <- r; names(rr) <- basename(names(r))
+  if (!is.null(report_dir)) {
+    rr <- sapply(r, function(a) { a$table }, simplify = FALSE)
+    names(rr) <- stringr::str_trunc(basename(names(r)), 29, "center")
+
+    duplicateNames <- names(rr) %>% intersect(.[duplicated(.)])
+    for(i in duplicateNames) {
+      dupIndex <- which(names(rr) == i)
+      # Replace w/ sequential numbers:
+      names(rr)[dupIndex] <-
+        sapply(seq_along(dupIndex),
+          function(j) sprintf("%s_%01d", names(rr)[dupIndex[j]], j))
+    }
 
     fileName <- paste(report_dir, basename(report_dir) %_% ".xlsx", sep = "/")
     rio::export(rr, fileName, rowNames = FALSE)
@@ -409,7 +581,8 @@ plot_peak2_data <- function(
       ss <- xlsx::getSheets(wb)
       imageFiles <- list.files(report_dir, "^\\d{3} - .*?\\.png", full.names = TRUE, ignore.case = TRUE)
 
-      dev_null <- sapply(seq_along(ss), function(i) { xlsx::addPicture(imageFiles[i], ss[[i]], scale = 1, startRow = 1, startColumn = 4); nop() })
+      plyr::l_ply(seq_along(ss),
+        function(i) { xlsx::addPicture(imageFiles[i], ss[[i]], scale = 1, startRow = 1, startColumn = 4) })
 
       xlsx::saveWorkbook(wb, fileName)
     }
