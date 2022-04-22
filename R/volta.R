@@ -451,6 +451,8 @@ plot_peak2_data <- function(
           segmented = FALSE, segmented... = list(breakpoints... = list(h = 3)),
           legend... = list(x = "topright")
         )
+        plot_seriesArgs <-
+          utils::modifyList(plot_seriesArgs, plot_series..., keep.null = TRUE)
 
         ## Find smoothed series & derivative(s).
         deriv <- 1:2
@@ -472,14 +474,14 @@ plot_peak2_data <- function(
         z <- do.call(plinth::create_smooth_variables, create_smooth_variablesArgs)
         tictoc::toc()
 
-        create_smooth_variablesArgs <- as.list(args(plinth::create_smooth_variables))
+        create_smooth_variablesArgsAbo <- as.list(args(plinth::create_smooth_variables))
         o <- structure(vector("list", length = length(deriv)), .Names = as.character(deriv))
         for (i in as.character(deriv)) {
           o[[i]] <- list()
 
-          o[[i]]$dv <- sprintf(create_smooth_variablesArgs$deriv_suffix_template, as.numeric(i))
-          o[[i]]$ll <- create_smooth_variablesArgs$lower_ci_suffix
-          o[[i]]$ul <- create_smooth_variablesArgs$upper_ci_suffix
+          o[[i]]$dv <- sprintf(create_smooth_variablesArgsAbo$deriv_suffix_template, as.numeric(i))
+          o[[i]]$ll <- create_smooth_variablesArgsAbo$lower_ci_suffix
+          o[[i]]$ul <- create_smooth_variablesArgsAbo$upper_ci_suffix
         }
 
         zz <- attr(z, "frfast")
@@ -487,7 +489,7 @@ plot_peak2_data <- function(
         changepoints_cv <- sapply(series,
           function(i)
           {
-            x1 <- zz[[i]]$quantity; y1 <- zz[[i]][[i]]
+            x1 <- zz[[i]][[create_smooth_variablesArgs$x_var]]; y1 <- zz[[i]][[i]]
             if (any(is.na(y1))) { # This should mostly be false, but isn't always
               warning("Smoothed variable 'y1' contains some missings.", immediate. = TRUE)
 
@@ -503,8 +505,9 @@ plot_peak2_data <- function(
             cp <- plinth::nearest(x1, knee[1]) # Could just be 'cp <- knee[1]'.
 
             r <- list(
-              x = zz[[i]]$quantity[cp] %>% plyr::round_any(round_to_nearest_volts),
-              y = approx(x = y$quantity, y = y[[i]], xout = zz[[i]]$quantity)$y[cp]
+              x = zz[[i]][[create_smooth_variablesArgs$x_var]][cp] %>% plyr::round_any(round_to_nearest_volts),
+              y = approx(x = y[[create_smooth_variablesArgs$x_var]], y = y[[i]],
+                xout = zz[[i]][[create_smooth_variablesArgs$x_var]])$y[cp]
             )
 
             r
@@ -526,7 +529,7 @@ plot_peak2_data <- function(
 
       structure(
         list(plot_args = plot_seriesArgs, changepoints_cv = changepoints_cv, table = rv, experiment_name = experiment_name),
-        derivatives = tibble::as_tibble(zz)
+        derivatives = sapply(zz, tibble::as_tibble, simplify = FALSE)
       )
     }, simplify = FALSE)
 
