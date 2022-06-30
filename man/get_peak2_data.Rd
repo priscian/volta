@@ -15,10 +15,10 @@ get_peak2_data(
   list.files... = list(),
   read.FCS... = list(),
   min_zero = FALSE,
-  cv_fun = plinth::bd_rcv,
+  cv_fun = keystone::bd_rcv,
   cv_multiplier = 100,
   replace_with_na_condition = ~is.infinite(.x) | is.nan(.x) | .x < 0,
-  color_nm_map = plinth::color_nm_map
+  color_nm_map = keystone::color_nm_map
 )
 }
 \arguments{
@@ -38,7 +38,7 @@ get_peak2_data(
 
 \item{replace_with_na_condition}{Optional argument \code{condition} to \code{\link[naniar:replace_with_na_all]{naniar::replace_with_na_all()}} to replace e.g. negative CV values with \code{NA}.}
 
-\item{color_nm_map}{Named vector map of color names to nm wavelength values, the default being \code{\link[plinth:color_nm_map]{plinth::color_nm_map}}.}
+\item{color_nm_map}{Named vector map of color names to nm wavelength values, the default being \code{\link[keystone:color_nm_map]{keystone::color_nm_map}}.}
 }
 \value{
 \code{\link[=get_peak2_data]{get_peak2_data()}} returns a list (named after the input FCS files) of data matrices, each of whose first column contains all test voltages, with remaining columns containing Peak 2 CV values for each voltage. Each data matrix in the list has the following custom attributes:

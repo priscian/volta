@@ -12,7 +12,7 @@
 #' @param cv_fun Function to calculate the coefficient of variation against which PMT voltage is plotted. The default is BD Biosciences robust standard deviation (BD-rSD), `bd_rcv`; alternatives are `cv` & robust coefficient of variation (rCV), `rcv`.
 #' @param cv_multiplier Numeric; the default value of 100 pushes all CVs above 1.
 #' @param replace_with_na_condition Optional argument `condition` to [naniar::replace_with_na_all()] to replace e.g. negative CV values with `NA`.
-#' @param color_nm_map Named vector map of color names to nm wavelength values, the default being [`plinth::color_nm_map`].
+#' @param color_nm_map Named vector map of color names to nm wavelength values, the default being [`keystone::color_nm_map`].
 #'
 #' @return
 #' [get_peak2_data()] returns a list (named after the input FCS files) of data matrices, each of whose first column contains all test voltages, with remaining columns containing Peak 2 CV values for each voltage. Each data matrix in the list has the following custom attributes:
@@ -31,7 +31,7 @@
 
 #' @import data.table
 #' @importFrom magrittr %>%
-#' @importFrom plinth %_% cordon is_invalid dataframe
+#' @importFrom keystone %_% cordon is_invalid dataframe
 #' @importFrom flowpipe `colnames<-`
 
 ## FCS file format: https://en.wikipedia.org/wiki/Flow_Cytometry_Standard
@@ -51,10 +51,10 @@ get_peak2_data <- function(
   list.files... = list(),
   read.FCS... = list(),
   min_zero = FALSE,
-  cv_fun = plinth::bd_rcv,
+  cv_fun = keystone::bd_rcv,
   cv_multiplier = 100,
   replace_with_na_condition = ~ is.infinite(.x) | is.nan(.x) | .x < 0.0,
-  color_nm_map = plinth::color_nm_map
+  color_nm_map = keystone::color_nm_map
 )
 {
   list.dirsArgs <- list(
@@ -80,13 +80,13 @@ get_peak2_data <- function(
     {
       list.filesArgs$path = i
       list.filesArgs <- utils::modifyList(list.filesArgs, list.files...)
-      filePaths <- do.call(plinth::list_files, list.filesArgs)
+      filePaths <- do.call(keystone::list_files, list.filesArgs)
 
       filePaths
     }, simplify = FALSE) %>% purrr::compact() # Remove blank elements
 
   ## N.B. TODO: Allow review of directories & files here w/ interactive go/no-go.
-  #browser()
+  browser()
   nmRe <- "\b?([2-9][0-9][0-9])\b?"
   colorRe <- sprintf("(%s)", paste(names(color_nm_map), collapse = "|"))
 
@@ -98,7 +98,7 @@ get_peak2_data <- function(
         tictoc::tic("Make PMM files")
 
         ## Make augmented flowCore::flowFrame objects.
-        pmm_files <- plinth::psapply(i,
+        pmm_files <- keystone::psapply(i,
           function(j)
           {
             prepare_augmented_fcs_dataArgs <- list(
@@ -177,7 +177,7 @@ get_peak2_data <- function(
               desc = dplyr::case_when(is.na(desc) ~ name, TRUE ~ desc)
             ) %>%
             dplyr::left_join(
-              plinth::dataframe(
+              keystone::dataframe(
                 parameter = .$parameter,
                 quantity =
                   sapply(.$quantity_keyword,
@@ -254,10 +254,10 @@ get_peak2_data <- function(
           ##   we need to use the distinct populations in 'stain_groups'.
 
           quantityMap <- structure(pData$quantity, .Names = pData$desc)
-          # ee <- e %>% plyr::aaply(2, function(k) { cv_fun(data.matrix(k)) * cv_multiplier }) %>% t %>% plinth::dataframe()
+          # ee <- e %>% plyr::aaply(2, function(k) { cv_fun(data.matrix(k)) * cv_multiplier }) %>% t %>% keystone::dataframe()
           ee <- sapply(colnames(e),
             function(a) { cv_fun(unclass(e[, a]), stain_groups = stain_groups[[a]], quantity = quantityMap[a][1]) * cv_multiplier },
-            simplify = FALSE) %>% plinth::dataframe()
+            simplify = FALSE) %>% keystone::dataframe()
           attr(ee, "channel_quantities") <- structure(pData$quantity, .Names = pData$desc)[colnames(e)]
           attr(ee, "machine_name") <- keywords$`$CYT`
           attr(ee, "experiment_name") <- keywords$FILENAME %>% dirname %>% basename
@@ -274,7 +274,7 @@ get_peak2_data <- function(
             function(k)
             {
               cbind(quantity = k, j[, channel_quantities %in% k])
-            }, simplify = FALSE)) %>% dplyr::mutate(quantity = as.numeric(plinth::unfactor(quantity)))
+            }, simplify = FALSE)) %>% dplyr::mutate(quantity = as.numeric(keystone::unfactor(quantity)))
 
           v
         }, simplify = FALSE)
@@ -383,7 +383,7 @@ plot_peak2_data <- function(
   r <- sapply(x,
     function(a)
     {
-      color <- plinth::wavelength2col(attr(a, "wavelength"))
+      color <- keystone::wavelength2col(attr(a, "wavelength"))
       defaultColor <- default_color_fun(length(color))
       color[is.na(color)] <- defaultColor[is.na(color)]
       experiment_name <- attr(a, "experiment_name"); if (is_invalid(experiment_name)) experiment_name <- "[no experiment_name]"
@@ -399,13 +399,13 @@ plot_peak2_data <- function(
           {
             if (keep_longest_continuous) {
               ## Keep all values in rightmost stretch
-              # ii <- b[b %>% plinth::na_unwrap()] %>% is.na %>% `!` %>% rle %>% `$`("lengths") %>% plinth::cum_sum() %>% `c`(1, .)
+              # ii <- b[b %>% keystone::na_unwrap()] %>% is.na %>% `!` %>% rle %>% `$`("lengths") %>% keystone::cum_sum() %>% `c`(1, .)
               # i <- (ii[length(ii) - 1]):(length(b))
               # bb <- rep(NA_real_, length(b))
               # bb[i] <- b[i]
 
               ## Keep all values including + after longest stretch
-              r <- b[b %>% plinth::na_unwrap()] %>% is.na %>% `!` %>% rle
+              r <- b[b %>% keystone::na_unwrap()] %>% is.na %>% `!` %>% rle
               i <- ((c(0, r$lengths) %>% cumsum)[r$lengths[r$values] %>% which.max] + 1):(length(b))
               bb <- rep(NA_real_, length(b))
               bb[i] <- b[i]
@@ -471,10 +471,10 @@ plot_peak2_data <- function(
         create_smooth_variablesArgs <-
           utils::modifyList(create_smooth_variablesArgs, create_smooth_variables..., keep.null = TRUE)
         tictoc::tic("Create smoothed variables")
-        z <- do.call(plinth::create_smooth_variables, create_smooth_variablesArgs)
+        z <- do.call(keystone::create_smooth_variables, create_smooth_variablesArgs)
         tictoc::toc()
 
-        create_smooth_variablesArgsAbo <- as.list(args(plinth::create_smooth_variables))
+        create_smooth_variablesArgsAbo <- as.list(args(keystone::create_smooth_variables))
         o <- structure(vector("list", length = length(deriv)), .Names = as.character(deriv))
         for (i in as.character(deriv)) {
           o[[i]] <- list()
@@ -493,7 +493,7 @@ plot_peak2_data <- function(
             if (any(is.na(y1))) { # This should mostly be false, but isn't always
               warning("Smoothed variable 'y1' contains some missings.", immediate. = TRUE)
 
-              y1 <- drop(plinth::interpNA(y1, method = "fmm", unwrap = FALSE))
+              y1 <- drop(keystone::interpNA(y1, method = "fmm", unwrap = FALSE))
             }
             checkCurve <- inflection::check_curve(x1, y1)
             if (checkCurve$index == 1) { # This works! I should figure out why....
@@ -502,7 +502,7 @@ plot_peak2_data <- function(
               x1 <- x1[j]; y1 <- y1[j]
             }
             knee <- inflection::uik(x1, y1)
-            cp <- plinth::nearest(x1, knee[1]) # Could just be 'cp <- knee[1]'.
+            cp <- keystone::nearest(x1, knee[1]) # Could just be 'cp <- knee[1]'.
 
             r <- list(
               x = zz[[i]][[create_smooth_variablesArgs$x_var]][cp] %>% plyr::round_any(round_to_nearest_volts),
@@ -546,7 +546,7 @@ plot_peak2_data <- function(
         )
       }
 
-      do.call(plinth::plot_series, r[[a]]$plot_args)
+      do.call(keystone::plot_series, r[[a]]$plot_args)
 
       pointsArgs <- list(
         col = "black",
@@ -577,7 +577,7 @@ plot_peak2_data <- function(
     rio::export(rr, fileName, rowNames = FALSE)
 
     wb <- xlsx::loadWorkbook(fileName)
-    plinth::poly_eval(xlsx_expression)
+    keystone::poly_eval(xlsx_expression)
 
     ## Add plots to report.
     if (save_png) {
