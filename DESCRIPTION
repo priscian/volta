@@ -8,7 +8,7 @@ Description: Flow cytometers: calculate minimum per-channel voltage for optimal
   resolution sensitivity to dim vs. unstained events.
 Depends: R (>= 3.5.0)
 Suggests: knitr, pander, testthat
-Imports: flowpipe, inflection, xlsx, keystone
+Imports: flowpipe, inflection, fs, xlsx, keystone
 Remotes: github::priscian/keystone, github::priscian/flowpipe
 VignetteBuilder: knitr
 License: Artistic-2.0

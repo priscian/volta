@@ -86,7 +86,7 @@ get_peak2_data <- function(
     }, simplify = FALSE) %>% purrr::compact() # Remove blank elements
 
   ## N.B. TODO: Allow review of directories & files here w/ interactive go/no-go.
-  browser()
+  #browser()
   nmRe <- "\b?([2-9][0-9][0-9])\b?"
   colorRe <- sprintf("(%s)", paste(names(color_nm_map), collapse = "|"))
 
@@ -112,7 +112,8 @@ get_peak2_data <- function(
               outfile_prefix = expression(outfile_prefix <- paste0(x %>% dirname %>% basename, "-")),
               overwrite = FALSE
             )
-            prepare_augmented_fcs_dataArgs <- utils::modifyList(prepare_augmented_fcs_dataArgs, prepare_augmented_fcs_data..., keep.null = TRUE)
+            prepare_augmented_fcs_dataArgs <-
+              utils::modifyList(prepare_augmented_fcs_dataArgs, prepare_augmented_fcs_data..., keep.null = TRUE)
 
             pmm_file <- do.call(flowpipe::prepare_augmented_fcs_data, prepare_augmented_fcs_dataArgs)
 
@@ -256,7 +257,8 @@ get_peak2_data <- function(
           quantityMap <- structure(pData$quantity, .Names = pData$desc)
           # ee <- e %>% plyr::aaply(2, function(k) { cv_fun(data.matrix(k)) * cv_multiplier }) %>% t %>% keystone::dataframe()
           ee <- sapply(colnames(e),
-            function(a) { cv_fun(unclass(e[, a]), stain_groups = stain_groups[[a]], quantity = quantityMap[a][1]) * cv_multiplier },
+            function(a) { cv_fun(unclass(e[, a]), stain_groups = stain_groups[[a]],
+              quantity = quantityMap[a][1]) * cv_multiplier },
             simplify = FALSE) %>% keystone::dataframe()
           attr(ee, "channel_quantities") <- structure(pData$quantity, .Names = pData$desc)[colnames(e)]
           attr(ee, "machine_name") <- keywords$`$CYT`
@@ -287,11 +289,13 @@ get_peak2_data <- function(
       d <- data.table::data.table(rrr)
       ## Remove voltage duplicates by averaging.
       #d <- d[, lapply(.SD, mean, na.rm = TRUE), by = .(quantity), .SDcols = tail(colnames(d), -1)]
-      d <- d[, lapply(.SD, function(j) { if (all(is.na(j))) NA_real_ else mean(j, na.rm = TRUE) }), by = .(quantity), .SDcols = tail(colnames(d), -1)]
+      d <- d[, lapply(.SD, function(j) { if (all(is.na(j))) NA_real_ else mean(j, na.rm = TRUE) }),
+        by = .(quantity), .SDcols = tail(colnames(d), -1)]
       rrr <- d %>% as.data.frame()
 
       ## Add some attributes.
-      color <- tolower(stringr::str_match(colnames(rrr)[2:NCOL(rrr)], stringr::regex(colorRe, ignore_case = TRUE))[, 2])
+      color <- tolower(stringr::str_match(colnames(rrr)[2:NCOL(rrr)],
+        stringr::regex(colorRe, ignore_case = TRUE))[, 2])
       wavelength <- stringr::str_match(colnames(rrr)[2:NCOL(rrr)], nmRe)[, 2]
       if (all(Vectorize(is_invalid)(wavelength)))
         wavelength <- color_nm_map[color]
@@ -356,7 +360,8 @@ plot_peak2_data <- function(
   points... = list(),
   debug = FALSE,
   round_to_nearest_volts = 1, # Round to nearest multiple of this value
-  xlsx_expression = NULL
+  xlsx_expression = NULL,
+  plot_individual_channels = FALSE # When TRUE, used to check inter-rater reliability for paper
 )
 {
   if (save_png && !dir.exists(image_dir))
@@ -534,29 +539,55 @@ plot_peak2_data <- function(
     }, simplify = FALSE)
 
   ## Create plots
+  grobs <- list()
   plyr::l_ply(seq_along(r),
     function(a)
     {
-      if (save_png) {
-        do.call(grDevices::png,
-          utils::modifyList(pngArgs,
-            ## N.B. 'sprintf(0)' returns 0-length string for any NULL values; use 'format(NULL)' to output "NULL".
-            list(filename = sprintf("%s/%03d - %s.png", format(image_dir), a, basename(r[[a]]$experiment_name))),
-            keep.null = TRUE)
-        )
-      }
-
-      do.call(keystone::plot_series, r[[a]]$plot_args)
+      pngArgsCopy <- utils::modifyList(pngArgs,
+        ## N.B. 'sprintf(0)' returns 0-length string for any NULL values; use 'format(NULL)' to output "NULL".
+        list(filename = sprintf("%s/%03d - %s.png", format(image_dir), a, basename(r[[a]]$experiment_name))),
+        keep.null = TRUE)
 
       pointsArgs <- list(
         col = "black",
         pch = 4, cex = 1
       )
       pointsArgs <- utils::modifyList(pointsArgs, points..., keep.null = TRUE)
-      plyr::l_ply(r[[a]]$changepoints_cv,
-        function(b) { pointsArgs$x = b; do.call(points, pointsArgs) })
 
-      if (save_png) dev.off()
+      if (plot_individual_channels) {
+        for (i in seq_along(r[[a]]$plot_args$series)) {
+          plotArgsFlit <- rlang::duplicate(r[[a]]$plot_args, shallow = FALSE)
+
+          pngArgsFlit <- rlang::duplicate(pngArgsCopy, shallow = FALSE)
+          pngArgsFlit$filename <-
+            sprintf("%s#%s.%s", tools::file_path_sans_ext(pngArgsFlit$filename),
+              fs::path_sanitize(plotArgsFlit$series[i], replacement = ";"), tools::file_ext(pngArgsFlit$filename))
+
+          plotArgsFlit$series <- plotArgsFlit$series[i]
+          plotArgsFlit$col <- plotArgsFlit$col[i]
+
+          if (save_png) do.call(grDevices::png, pngArgsFlit)
+
+          do.call(keystone::plot_series, plotArgsFlit)
+
+          do.call(points, pointsArgs %>% `[[<-`("x", r[[a]]$changepoints_cv[[i]]))
+
+          if (save_png) dev.off()
+          else grobs <<- append(grobs, list(grDevices::recordPlot()))
+        }
+
+        ## Don't create a report
+        report_dir <<- NULL
+      } else {
+        if (save_png) do.call(grDevices::png, pngArgsCopy)
+
+        do.call(keystone::plot_series, r[[a]]$plot_args)
+
+        plyr::l_ply(r[[a]]$changepoints_cv,
+          function(b) { pointsArgs$x = b; do.call(points, pointsArgs) })
+
+        if (save_png) dev.off()
+      }
     })
 
   ## Make Peak 2 report.
@@ -590,6 +621,15 @@ plot_peak2_data <- function(
       xlsx::saveWorkbook(wb, fileName)
     }
   }
+
+  ## At this point, I could save 'grobs' & restore the plots later.
+  # browser()
+  # dev.new(width = 9.375, height = 7.3)
+  # print(length(grobs))
+  # grDevices::replayPlot(grobs[[1]])
+  # saveRDS(grobs, file = "./data/volta-irr-grobs.rds")
+  # g <- readRDS(file = "./data/volta-irr-grobs.rds")
+  # grDevices::replayPlot(g[[1]])
 
   r
 }
