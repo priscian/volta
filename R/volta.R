@@ -125,7 +125,7 @@ get_peak2_data <- function(
         tictoc::toc()
       }
 
-      r <- sapply(ii,
+      r <- keystone::psapply(ii,
         function(j)
         {
           fcs <- stain_groups <- NULL
@@ -360,6 +360,7 @@ plot_peak2_data <- function(
   points... = list(),
   debug = FALSE,
   round_to_nearest_volts = 1, # Round to nearest multiple of this value
+  round_any_fun = round,
   xlsx_expression = NULL,
   plot_individual_channels = FALSE # When TRUE, used to check inter-rater reliability for paper
 )
@@ -385,7 +386,7 @@ plot_peak2_data <- function(
   if (is_invalid(names(y_var_lab)) || trimws(names(y_var_lab)) == "") names(y_var_lab) <- y_var_lab
 
   ## Create plotting data set
-  r <- sapply(x,
+  r <- keystone::psapply(x,
     function(a)
     {
       color <- keystone::wavelength2col(attr(a, "wavelength"))
@@ -510,7 +511,8 @@ plot_peak2_data <- function(
             cp <- keystone::nearest(x1, knee[1]) # Could just be 'cp <- knee[1]'.
 
             r <- list(
-              x = zz[[i]][[create_smooth_variablesArgs$x_var]][cp] %>% plyr::round_any(round_to_nearest_volts),
+              x = zz[[i]][[create_smooth_variablesArgs$x_var]][cp] %>%
+                plyr::round_any(round_to_nearest_volts, f = round_any_fun),
               y = approx(x = y[[create_smooth_variablesArgs$x_var]], y = y[[i]],
                 xout = zz[[i]][[create_smooth_variablesArgs$x_var]])$y[cp]
             )
@@ -630,6 +632,9 @@ plot_peak2_data <- function(
   # saveRDS(grobs, file = "./data/volta-irr-grobs.rds")
   # g <- readRDS(file = "./data/volta-irr-grobs.rds")
   # grDevices::replayPlot(g[[1]])
+  ## Collect the optimal voltages en masse:
+  # sapply(r, function(a) a$table$PMT_voltage, simplify = FALSE) %>% unlist %>%
+  #   keystone::dataframe(pmt_voltage = .) %>% `[`(1:60, , drop = FALSE)
 
   r
 }
