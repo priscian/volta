@@ -386,6 +386,7 @@ plot_peak2_data <- function(
   if (is_invalid(names(y_var_lab)) || trimws(names(y_var_lab)) == "") names(y_var_lab) <- y_var_lab
 
   ## Create plotting data set
+  # r <- sapply(x,
   r <- keystone::psapply(x,
     function(a)
     {
