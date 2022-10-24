@@ -39,11 +39,15 @@
 #' @export
 get_peak2_data <- function(
   path = ".",
-  ## These calcs typically rely on data stored in ad-hoc keywords for parameter n, e.g. PnV (_V_oltage), PnG (_G_ain):
+  ## These calcs typically rely on data stored in ad-hoc keywords
+  ##   for parameter n, e.g. PnV (_V_oltage), PnG (_G_ain):
   cv_keyword_fmt = "$P%sV",
-  ## 'analysis_channels_re' is one of: 1-element regex/character vector; 2+-element vector of channel names
-  analysis_channels_re = stringr::regex("^(?!(fsc|ssc|time).*)", ignore_case = TRUE),
-  ## 'use_spillover_channels' overrides 'analysis_channels_re' if TRUE; if so, use channel names from spillover matrix
+  ## 'analysis_channels_re' is one of: 1-element regex/character vector;
+  ##   2+-element vector of channel names
+  analysis_channels_re = stringr::regex("^(?!(fsc|ssc|time).*)",
+    ignore_case = TRUE),
+  ## 'use_spillover_channels' overrides 'analysis_channels_re' if TRUE;
+  ##   if TRUE, use channel names from spillover matrix
   use_spillover_channels = FALSE,
   create_pmm_data = FALSE,
   prepare_augmented_fcs_data... = list(),
@@ -51,6 +55,7 @@ get_peak2_data <- function(
   list.files... = list(),
   read.FCS... = list(),
   min_zero = FALSE,
+  ## Default CV is BD Biosciences' robust coefficient of variation (BD-rCV):
   cv_fun = keystone::bd_rcv,
   cv_multiplier = 100,
   replace_with_na_condition = ~ is.infinite(.x) | is.nan(.x) | .x < 0.0,
@@ -344,16 +349,19 @@ get_peak2_data <- function(
 #' @export
 plot_peak2_data <- function(
   x,
-  report_dir = NULL,
+  report_dir = NULL, # Optional path to report's output directory
   image_dir = report_dir,
   trans_fun = log10, # Also possibly 'identity'
   replace_with_na_condition = ~ is.infinite(.x) | is.nan(.x),
   max_cv_threshold = Inf, # Make anomalously high-valued CVs into missings
+  ## If TRUE, keep only longest stretch of CVs without missing values:
   keep_longest_continuous = FALSE,
   remove_empty_cols = TRUE,
-  save_png = FALSE, png... = list(),
+  save_png = FALSE, # If TRUE, save PNG plots to report directory
+  png... = list(),
   default_color_fun = colorspace::rainbow_hcl,
-  x_var_lab = c(PMT_voltage = "PMT Voltage"), y_var_lab = c(log10_CV = expression(paste(log[10], " CV"))),
+  x_var_lab = c(PMT_voltage = "PMT Voltage"),
+  y_var_lab = c(log10_CV = expression(paste(log[10], " CV"))),
   plot_series... = list(),
   create_smooth_variables... = list(),
   plot_derivative = FALSE,
@@ -362,7 +370,8 @@ plot_peak2_data <- function(
   round_to_nearest_volts = 1, # Round to nearest multiple of this value
   round_any_fun = round,
   xlsx_expression = NULL,
-  plot_individual_channels = FALSE # When TRUE, used to check inter-rater reliability for paper
+  ## Noli me tangere; when TRUE, used for IRR checks:
+  plot_individual_channels = FALSE
 )
 {
   if (save_png && !dir.exists(image_dir))
@@ -453,7 +462,7 @@ plot_peak2_data <- function(
           xlab = x_var_lab, ylab = y_var_lab,
           main = experiment_name,
           dev.new... = list(width = 9.375, height = 7.3),
-          col = color, lwd = 1,
+          col = color, lwd = 4,
           trend = FALSE,
           segmented = FALSE, segmented... = list(breakpoints... = list(h = 3)),
           legend... = list(x = "topright")
@@ -553,7 +562,8 @@ plot_peak2_data <- function(
 
       pointsArgs <- list(
         col = "black",
-        pch = 4, cex = 1
+        pch = 4, cex = 1,
+        lwd = 3
       )
       pointsArgs <- utils::modifyList(pointsArgs, points..., keep.null = TRUE)
 
