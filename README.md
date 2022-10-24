@@ -70,7 +70,8 @@ p <- plot_peak2_data(x, max_cv_threshold = 2000, keep_longest_continuous = TRUE,
 ```
 
 ### Graphical output
-<br/>
+<!--<br/>-->
+[//]: <br/>
 
 ![Results of volta run on URMC Peak 2 data: Animal.](<inst/images/002 - Animal.png>)
 
@@ -79,7 +80,8 @@ p <- plot_peak2_data(x, max_cv_threshold = 2000, keep_longest_continuous = TRUE,
 ![Results of volta run on URMC Peak 2 data: Statler.](<inst/images/004 - Statler.png>)
 
 ### Function return value
-<br/>
+<!--<br/>-->
+[//]: <br/>
 
 ```r
 ## Show table of CV-vs-V inflection points for each channel & each instrument
@@ -148,7 +150,8 @@ $`[...]/Peak 2 statler LN Z01 122221`
 ```
 
 ### Function signatures
-<br/>
+<!--<br/>-->
+[//]: <br/>
 
 This is the function signature of `get_peak2_data()` with annotations:
 
