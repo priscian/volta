@@ -1,278 +1,151 @@
-
-#' Load Peak 2 FCS files at different PMT voltages
-#'
-#'@description
-#' Loads Peak 2 FCS files to gather up channel & voltage data for "knee" analysis.
-#'
-#' @param path Path to directory holding the Peak 2 FCS files for analysis.
-#' @param list.dirs... An optional list of arguments to [base::list.dirs()], for finer selection control of the subdirectories of `path`.
-#' @param list.files... An optional list of arguments to [base::list.files()], for finer selection control of Peak 2 FCS files under `path`.
-#' @param read.FCS... An optional list of arguments to [flowCore::read.FCS()], for reading in the Peak 2 FCS files.
-#' @param min_zero Logical; if `TRUE`, shift expression values for each channel so that the minimum value is zero. The default is `FALSE`.
-#' @param cv_fun Function to calculate the coefficient of variation against which PMT voltage is plotted. The default is BD Biosciences robust standard deviation (BD-rSD), `bd_rcv`; alternatives are `cv` & robust coefficient of variation (rCV), `rcv`.
-#' @param cv_multiplier Numeric; the default value of 100 pushes all CVs above 1.
-#' @param replace_with_na_condition Optional argument `condition` to [naniar::replace_with_na_all()] to replace e.g. negative CV values with `NA`.
-#' @param color_nm_map Named vector map of color names to nm wavelength values, the default being [`keystone::color_nm_map`].
-#'
-#' @return
-#' [get_peak2_data()] returns a list (named after the input FCS files) of data matrices, each of whose first column contains all test voltages, with remaining columns containing Peak 2 CV values for each voltage. Each data matrix in the list has the following custom attributes:
-#' \item{`experiment_name`}{Usually the name of a directory holding a collection of per-voltage FCS files for a particular instrument.}
-#' \item{`color`}{Color names for each channel.}
-#' \item{`wavelength`}{Color wavelengths (nm) for each channel.}
-#' \item{`raw_cv`}{The CV data matrix for this instument before removal of e.g. negatives, `NaN`s, & so on.}
-#'
-#' @examples
-#' \dontrun{
-#' library(volta)
-#' pacman::p_load(magrittr)
-#' x <- get_peak2_data("QC/Peak 2 and Baseline Calibrations/2020/March 2020/Data",
-#'   list.dirs... = list(pattern = "(Waldorf 030220|Z01)$", recursive = TRUE))
-#' }
-
 #' @import data.table
-#' @importFrom magrittr %>%
+#' @importFrom magrittr %>% %<>%
 #' @importFrom keystone %_% cordon is_invalid dataframe
 #' @importFrom flowpipe `colnames<-`
 
 ## FCS file format: https://en.wikipedia.org/wiki/Flow_Cytometry_Standard
 
+expand_parameters_data <- function(
+  x,
+  analysis_channels_sep = ",", quantity_sep = analysis_channels_sep,
+  same_word = "SAME"
+)
+{
+  pp <- dplyr::group_by(x, machine) %>%
+    { structure(dplyr::group_split(., .keep = TRUE), .Names = dplyr::group_keys(.) %>%
+      dplyr::pull(machine)) }
+
+  ep <- sapply(pp,
+    function(a)
+    {
+      ## Convert "serialized" channels strings to list of character vectors
+      channels_ex <- a$channels
+      for (i in seq(length(channels_ex))) {
+        if (channels_ex[i] == same_word)
+          channels_ex[i] <- channels_ex[i - 1]
+      }
+      channels_ex %<>%
+        sapply(stringr::str_split_1, pattern = analysis_channels_sep,
+          USE.NAMES = FALSE, simplify = FALSE)
+
+      a %<>% dplyr::mutate(channels_ex = channels_ex, .after = "channels")
+
+      ## Convert "serialized" quantity strings to list of character vectors
+      quantity_ex <- mapply(a$quantity, a$channels_ex,
+        FUN = function(d, e)
+        {
+          qex <- stringr::str_split_1(d, pattern = quantity_sep) %>%
+            rep(length.out = length(e))
+
+          qex
+        }, USE.NAMES = FALSE, SIMPLIFY = FALSE)
+
+      a %<>% dplyr::mutate(quantity_ex = quantity_ex, .after = "quantity")
+
+      a
+    }, simplify = FALSE)
+
+  ep
+}
+
+
 #' @export
-get_peak2_data <- function(
-  path = ".",
-  ## These calcs typically rely on data stored in ad-hoc keywords
-  ##   for parameter n, e.g. PnV (_V_oltage), PnG (_G_ain):
-  cv_keyword_fmt = "$P%sV",
-  ## 'analysis_channels_re' is one of: 1-element regex/character vector;
-  ##   2+-element vector of channel names
-  analysis_channels_re = stringr::regex("^(?!(fsc|ssc|time).*)",
-    ignore_case = TRUE),
-  ## 'use_spillover_channels' overrides 'analysis_channels_re' if TRUE;
-  ##   if TRUE, use channel names from spillover matrix
-  use_spillover_channels = FALSE,
-  create_pmm_data = FALSE,
-  prepare_augmented_fcs_data... = list(),
-  list.dirs... = list(),
-  list.files... = list(),
+get_voltration_data <- function(
+  x, # volta analysis parameters as a data frame or spreadsheet path
+  create_si_data = FALSE,
   read.FCS... = list(),
   min_zero = FALSE,
   ## Default CV is BD Biosciences' robust coefficient of variation (BD-rCV):
   cv_fun = keystone::bd_rcv,
   cv_multiplier = 100,
   replace_with_na_condition = ~ is.infinite(.x) | is.nan(.x) | .x < 0.0,
-  color_nm_map = keystone::color_nm_map
+  copy_results = TRUE,
+  expand_parameters_data... = list(),
+  ... # Arguments for function 'find_inflection_point()'
 )
 {
-  list.dirsArgs <- list(
-    path = path
+  if (missing(x) || is_invalid(x)) {
+    params <- .volta$params
+  } else if (is.character(x)) {
+    params <- rio::import(x)
+  }
+
+  ## Expand parameters data to streamline voltration analysis
+  # ep <- expand_parameters_data(params, ...)
+  expand_parameters_dataArgs <- list(
+    x = params
   )
-  list.dirsArgs <- utils::modifyList(list.dirsArgs, list.dirs...)
-  list.dirsPattern <- list.dirsArgs$pattern
-  list.dirsArgs$pattern <- NULL
-  dirPaths <- do.call(list.dirs, list.dirsArgs)
+  expand_parameters_dataArgs <-
+    utils::modifyList(expand_parameters_dataArgs, expand_parameters_data..., keep.null = TRUE)
 
-  if (!is.null(list.dirsPattern))
-    dirPaths <- dirPaths[stringr::str_detect(dirPaths, list.dirsPattern)]
+  ep <- do.call(expand_parameters_data, expand_parameters_dataArgs)
 
-  list.filesArgs <- list(
-    pattern = ".*?\\.fcs$",
-    full.names = TRUE,
-    recursive = FALSE,
-    ignore.case = TRUE
-  )
-
-  ff <- sapply(dirPaths,
+  p2 <- keystone::psapply(ep,
     function(i)
     {
-      list.filesArgs$path = i
-      list.filesArgs <- utils::modifyList(list.filesArgs, list.files...)
-      filePaths <- do.call(keystone::list_files, list.filesArgs)
-
-      filePaths
-    }, simplify = FALSE) %>% purrr::compact() # Remove blank elements
-
-  ## N.B. TODO: Allow review of directories & files here w/ interactive go/no-go.
-  #browser()
-  nmRe <- "\b?([2-9][0-9][0-9])\b?"
-  colorRe <- sprintf("(%s)", paste(names(color_nm_map), collapse = "|"))
-
-  p2 <- sapply(ff,
-    function(i)
-    {
-      ii <- i
-      if (create_pmm_data) {
-        tictoc::tic("Make PMM files")
-
-        ## Make augmented flowCore::flowFrame objects.
-        pmm_files <- keystone::psapply(i,
-          function(j)
-          {
-            prepare_augmented_fcs_dataArgs <- list(
-              x = j,
-              b = 1/150,
-              data_dir = sprintf("./data/%s", j %>% dirname %>% basename),
-              remove_outliers = FALSE,
-              excluded_channels_re = stringr::regex("time|event_length|(width$)", ignore_case = TRUE),
-              multisect... = list(max_sample = 5000),
-              outfile_suffix = NULL,
-              outfile_prefix = expression(outfile_prefix <- paste0(x %>% dirname %>% basename, "-")),
-              overwrite = FALSE
-            )
-            prepare_augmented_fcs_dataArgs <-
-              utils::modifyList(prepare_augmented_fcs_dataArgs, prepare_augmented_fcs_data..., keep.null = TRUE)
-
-            pmm_file <- do.call(flowpipe::prepare_augmented_fcs_data, prepare_augmented_fcs_dataArgs)
-
-            pmm_file
-          }, simplify = FALSE)
-
-        ii <- pmm_files
-
-        tictoc::toc()
-      }
-
-      r <- keystone::psapply(ii,
+      r <- plyr::alply(i, 1,
         function(j)
         {
-          fcs <- stain_groups <- NULL
-          if (!create_pmm_data) {
-            local({
-              read.FCSArgs <- list(
-                filename = j,
-                truncate_max_range = FALSE,
-                transformation = FALSE
-              )
-              read.FCSArgs <- utils::modifyList(read.FCSArgs, read.FCS...)
-              fcs <<- do.call(flowCore::read.FCS, read.FCSArgs)
-            })
-          } else {
-            local({
-              load(j)
-              fcs <<- rlang::duplicate(tff, shallow = FALSE)
-              remove(tff)
+          read.FCSArgs <- list(
+            filename = j$path,
+            truncate_max_range = FALSE,
+            ## Retrieve only 1 event, but keep parameters, keywords, & value from FCS file's header:
+            #which.lines = 1,
+            transformation = FALSE
+          )
+          read.FCSArgs <- utils::modifyList(read.FCSArgs, read.FCS...)
+          fcs <- do.call(flowCore::read.FCS, read.FCSArgs)
+          exprs_tff <- flowpipe::get_fcs_expression_subset(list(fcs), sample = Inf)
+          ## N.B. This is extra complicated for historical reasons:
+          exprs_tff %<>% { `[`(., , -which(colnames(.) == "id"), drop = FALSE) } %>%
+            `[`(, intersect(colnames(.), j$channels_ex[[1]]), drop = FALSE)
 
-              exprs_fcs <- flowCore::exprs(fcs)
-              pmm <- attr(exprs_fcs, "plus_minus_matrix")
-
+          stain_groups <- NULL
+          if (create_si_data) {
+            local({
               ## Separate events as stained/unstained for each channel
-              stain_groups <<- sapply(colnames(pmm),
-                function(a)
+              stain_groups <<- sapply(colnames(exprs_tff),
+                function(k)
                 {
-                  pm <- pmm %>% dplyr::select(!!a) %>% dplyr::pull()
-                  if (!is.factor(pm))
-                    return (NULL)
-                  pm <- pm %>%
-                    forcats::fct_collapse(
-                      unstained = c("-", "d"),
-                      stained = c("+", "++")
-                    )
+                  channel_data <- flowCore::exprs(fcs)[, k]
+                  #channel_data <- flowpipe::rev_asinh(exprs_tff[, k], b = 1/150) # Should be same as previous
+                  #channel_data <- exprs_tff[, k]
+                  show_plots <- FALSE # For debugging
+                  cutoffs <- multisect(channel_data, bins = 2, plot_cutoff = show_plots)
+                  dens <- stats::density(channel_data)
+                  fp_unstained <- keystone::find_peaks(dens$x[dens$x < cutoffs], dens$y[dens$x < cutoffs],
+                    height_divisor = 2, truncate_overlaps = TRUE, force_results = TRUE, plot = show_plots) %>%
+                    dplyr::arrange(desc(y)) %>% `[`(1, )
+                  fp_stained <- keystone::find_peaks(dens$x[dens$x >= cutoffs], dens$y[dens$x >= cutoffs],
+                    height_divisor = 2, truncate_overlaps = TRUE, force_results = TRUE, plot = show_plots) %>%
+                    dplyr::arrange(desc(y)) %>% `[`(1, )
+                  fp <- dplyr::bind_rows(fp_unstained, fp_stained) %>%
+                    `rownames<-`(c("unstained", "stained"))
+                  ## If 'channel_data' was transformed, check (partially) transformed 'fp' (should be close):
+                  # fp %>% dplyr::mutate(across(all_of(c("x", "w_min", "w_max")), flowpipe::rev_asinh, b = 1/150))
 
-                  r <- exprs_fcs[, a] %>% split(pm)
-                  if (min_zero)
-                    r <- sapply(r, function(k) k - min(k, na.rm = TRUE))
-
-                  r
+                  fp
                 }, simplify = FALSE) %>% purrr::compact()
             })
           }
 
-          keywords <- fcs %>% flowCore::keyword()
-          pData <- fcs %>% flowCore::parameters() %>% flowCore::pData() %>%
-            tibble::rownames_to_column(var = "parameter") %>%
-            dplyr::mutate(
-              quantity_keyword = sprintf(cv_keyword_fmt, stringr::str_extract(parameter, "\\d+$")),
-              desc = dplyr::case_when(is.na(desc) ~ name, TRUE ~ desc)
-            ) %>%
-            dplyr::left_join(
-              keystone::dataframe(
-                parameter = .$parameter,
-                quantity =
-                  sapply(.$quantity_keyword,
-                    function(a) { r <- keywords[[a]]; if (is_invalid(r)) r <- NA; r })
-              ), by = "parameter"
-            ) %>%
-            dplyr::mutate(quantity = quantity %>% readr::parse_number())
-
-          ## 'pData' should now look something like this:
-          #   parameter              name              desc  range minRange maxRange quantity_keyword quantity
-          # 1        $P1             FSC-A             FSC-A 262144     0.00   262143             $P1V      450
-          # 2        $P2             SSC-A             SSC-A 262144     0.00   262143             $P2V      200
-          # 3        $P3   Blue B 515/20-A   Blue B 515/20-A 262144   -63.84   262143             $P3V      250
-          # 4        $P4   Blue A 710/50-A   Blue A 710/50-A 262144  -111.00   262143             $P4V      250
-          # 5        $P5 Violet H 450/50-A Violet H 450/50-A 262144   -40.18   262143             $P5V      250
-          # 6        $P6 Violet G 550/40-A Violet G 550/40-A 262144   -48.02   262143             $P6V      250
-          # 7        $P7 Violet F 560/40-A Violet F 560/40-A 262144   -60.76   262143             $P7V      250
-          # 8        $P8 Violet E 585/42-A Violet E 585/42-A 262144   -48.02   262143             $P8V      250
-          # 9        $P9 Violet D 605/40-A Violet D 605/40-A 262144   -58.80   262143             $P9V      250
-          # 10      $P10 Violet C 660/40-A Violet C 660/40-A 262144   -56.84   262143            $P10V      250
-          # 11      $P11 Violet B 705/70-A Violet B 705/70-A 262144   -73.50   262143            $P11V      250
-          # 12      $P12 Violet A 780/60-A Violet A 780/60-A 262144   -58.80   262143            $P12V      250
-          # 13      $P13    Red C 660/20-A    Red C 660/20-A 262144   -34.16   262143            $P13V      250
-          # 14      $P14    Red B 710/50-A    Red B 710/50-A 262144   -31.11   262143            $P14V      250
-          # 15      $P15    Red A 780/60-A    Red A 780/60-A 262144   -44.53   262143            $P15V      250
-          # 16      $P16  Green E 575/25-A  Green E 575/25-A 262144   -47.30   262143            $P16V      250
-          # 17      $P17  Green D 610/20-A  Green D 610/20-A 262144   -38.70   262143            $P17V      250
-          # 18      $P18  Green C 660/40-A  Green C 660/40-A 262144   -49.88   262143            $P18V      250
-          # 19      $P19  Green B 710/50-A  Green B 710/50-A 262144   -48.16   262143            $P19V      250
-          # 20      $P20  Green A 780/40-A  Green A 780/40-A 262144   -47.30   262143            $P20V      250
-          # 21      $P21              Time              Time 262144     0.00   262143            $P21V       NA
-
-          ## Now pick out the relevant channels.
-          ## Often, the spillover matrix uses those channel names:
-          # names(keywords) %>% stringr::str_subset(stringr::regex("spill", ignore_case = TRUE)) %>% `[[`(keywords, .) %>% colnames
-
-          ## Check for spillover matrix
-          spilloverKey <- names(keywords) %>% stringr::str_subset(stringr::regex("spill", ignore_case = TRUE))
-          hasSpilloverMatrix <- spilloverKey %>% `[[`(keywords, .) %>% is.matrix
-          spilloverChannels <- NULL
-          if (hasSpilloverMatrix)
-            spilloverChannels <- spilloverKey %>% `[[`(keywords, .) %>% colnames
-
-          ## Assume that 'pData$desc' has the channel info of interest:
-          pData$desc[is.na(pData$desc)] <- pData$name[is.na(pData$desc)]
-          description <- fcs %>% flowCore::description()
-
-          if (!is.null(use_spillover_channels) && use_spillover_channels) {
-            if (!hasSpilloverMatrix) {
-              warning("Spillover matrix not found. Defaulting to 'analysis_channels_re'", immediate. = FALSE)
-
-              cvChannels <- NULL
-            } else {
-              cvChannels <- spilloverChannels
-            }
-          }
-
-          if (is.null(use_spillover_channels) || !use_spillover_channels || is.null(cvChannels)) {
-            cvChannels <- stringr::str_subset(pData$desc, analysis_channels_re)
-          }
-
-          descNameMapFull <- structure(pData$desc, .Names = pData$name)
-          descNameMap <- descNameMapFull[descNameMapFull %in% cvChannels]
-
-          e <- flowCore::exprs(fcs) %>% `colnames<-`(descNameMapFull[colnames(.)]) %>%
-            `[`(, descNameMap)
+          e <- flowCore::exprs(fcs) %>%
+            `[`(, intersect(colnames(.), j$channels_ex[[1]]), drop = FALSE)
           if (min_zero)
             e <- plyr::aaply(e, 1, function(k) k - min(k, na.rm = TRUE))
 
-          if (!is.null(stain_groups))
-            names(stain_groups) <- descNameMapFull[names(stain_groups)]
-
-          ## To calculate Voltration index (VI) or anything involving stained-vs.-unstained comparisons,
-          ##   we need to use the distinct populations in 'stain_groups'.
-
-          quantityMap <- structure(pData$quantity, .Names = pData$desc)
-          # ee <- e %>% plyr::aaply(2, function(k) { cv_fun(data.matrix(k)) * cv_multiplier }) %>% t %>% keystone::dataframe()
+          quantityMap <- structure(j$quantity_ex[[1]], .Names = j$channels_ex[[1]])
           ee <- sapply(colnames(e),
             function(a) { cv_fun(unclass(e[, a]), stain_groups = stain_groups[[a]],
               quantity = quantityMap[a][1]) * cv_multiplier },
             simplify = FALSE) %>% keystone::dataframe()
-          attr(ee, "channel_quantities") <- structure(pData$quantity, .Names = pData$desc)[colnames(e)]
-          attr(ee, "machine_name") <- keywords$`$CYT`
-          attr(ee, "experiment_name") <- keywords$FILENAME %>% dirname %>% basename
+          attr(ee, "channel_quantities") <- quantityMap[colnames(e)]
+          attr(ee, "experiment_name") <- j$machine
 
           ee
-        }, simplify = FALSE)
+        })
 
-      ## It probably won't happen, but this can separate channels that aren't on the same voltage for some reason.
+      ## Low probability, but this separates channels not on the same voltage for some reason
       rr <- sapply(r,
         function(j)
         {
@@ -281,132 +154,99 @@ get_peak2_data <- function(
             function(k)
             {
               cbind(quantity = k, j[, channel_quantities %in% k])
-            }, simplify = FALSE)) %>% dplyr::mutate(quantity = as.numeric(keystone::unfactor(quantity)))
+            }, simplify = FALSE)) %>%
+            dplyr::mutate(quantity = as.numeric(keystone::unfactor(quantity)))
 
           v
         }, simplify = FALSE)
 
       raw_cv <- Reduce(plyr::rbind.fill, rr)
-      rrr <- raw_cv %>%
-        naniar::replace_with_na_all(condition = replace_with_na_condition) %>%
-        dplyr::arrange(quantity)
+      raw_cv_list <- list(raw_cv)
 
-      d <- data.table::data.table(rrr)
-      ## Remove voltage duplicates by averaging.
-      #d <- d[, lapply(.SD, mean, na.rm = TRUE), by = .(quantity), .SDcols = tail(colnames(d), -1)]
-      d <- d[, lapply(.SD, function(j) { if (all(is.na(j))) NA_real_ else mean(j, na.rm = TRUE) }),
-        by = .(quantity), .SDcols = tail(colnames(d), -1)]
-      rrr <- d %>% as.data.frame()
+      rv <- sapply(raw_cv_list,
+        function(j)
+        {
+          rrr <- j %>%
+            naniar::replace_with_na_all(condition = replace_with_na_condition) %>%
+            dplyr::arrange(quantity)
 
-      ## Add some attributes.
-      color <- tolower(stringr::str_match(colnames(rrr)[2:NCOL(rrr)],
-        stringr::regex(colorRe, ignore_case = TRUE))[, 2])
-      wavelength <- stringr::str_match(colnames(rrr)[2:NCOL(rrr)], nmRe)[, 2]
-      if (all(Vectorize(is_invalid)(wavelength)))
-        wavelength <- color_nm_map[color]
-      wavelength <- as.numeric(wavelength)
+          d <- data.table::data.table(rrr)
+          ## Remove voltage duplicates by averaging
+          d <-
+            d[, lapply(.SD, function(k) { if (all(is.na(k))) NA_real_ else mean(k, na.rm = TRUE) }),
+            by = .(quantity), .SDcols = tail(colnames(d), -1)]
+          rrr <- d %>% as.data.frame()
 
-      attr(rrr, "experiment_name") <- attr(r[[1]], "experiment_name")
-      attr(rrr, "color") <- color
-      attr(rrr, "wavelength") <- wavelength
-      attr(rrr, "raw_cv") <- raw_cv
+          ## Add some attributes.
+          gcc <- guess_channel_colors(colnames(rrr)[2:NCOL(rrr)])
 
-      rrr
-    }, simplify = FALSE)
+          attr(rrr, "experiment_name") <- attr(r[[1]], "experiment_name")
+          attr(rrr, "color") <- gcc$color
+          attr(rrr, "wavelength") <- gcc$wavelength
+          attr(rrr, "raw_cv") <- j
 
-  l <- p2
+          rrr
+        }, simplify = FALSE)
 
-  l
+      if (inherits(rv, "list") && length(rv) == 1L)
+        rv <- rv[[1]]
+
+      rv
+    }, simplify = FALSE)#, .parallel = FALSE)
+
+  fip <- find_inflection_point(p2, ...)
+
+  p2 <- sapply(names(p2),
+    function(i) { structure(p2[[i]], plot_data = fip[[i]]) %>% keystone::add_class("volta") })
+
+  ## Copy 'p2' to the package global variable
+  if (copy_results) {
+    current <- get(".volta", envir = asNamespace("volta"))
+    current$results <- p2
+    assign(".volta", current, envir = asNamespace("volta"))
+  }
+
+  if (interactive()) {
+    msg <- paste0(
+r"---{
+The volta results are ready to plot. To continue the analysis, type:
+
+}---",
+      "plot_voltration_data(save_png = TRUE)")
+    message(msg); utils::flush.console()
+  }
+
+  invisible(p2)
 }
 
 
-#' Plot Peak 2 CV vs. PMT voltages & find minimum "knee" voltage
-#'
-#'@description
-#' Creates a plot of Peak 2 CV vs. PMT voltages for each channel for each instrument & finds minimum "knee" voltage for optimal resolution sensitivity. Optionally generates a summary report as an Excel workbook.
-#'
-#' @param x List object generated by [get_peak2_data]
-#' @param report_dir \[Coming soon\]
-#' @param image_dir ...
-#' @param trans_fun ...
-#' @param replace_with_na_condition ...
-#' @param remove_empty_cols ...
-#' @param save_png ...
-#' @param plot_series... ...
-#' @param create_smooth_variables... ...
-#' @param plot_derivative ...
-#' @param points... ...
-#' @param debug ...
-#' @param xlsx_expression ...
-#'
-#' @return
-#'
-#' @examples
-#' \dontrun{
-#' ## There will totally be code here soon.
-#' }
-
-#' @export
-plot_peak2_data <- function(
-  x,
-  report_dir = NULL, # Optional path to report's output directory
-  image_dir = report_dir,
+find_inflection_point <- function(
+  x, # 'p2' list of tables from 'get_voltration_data()'
   trans_fun = log10, # Also possibly 'identity'
   replace_with_na_condition = ~ is.infinite(.x) | is.nan(.x),
   max_cv_threshold = Inf, # Make anomalously high-valued CVs into missings
   ## If TRUE, keep only longest stretch of CVs without missing values:
   keep_longest_continuous = FALSE,
   remove_empty_cols = TRUE,
-  save_png = FALSE, # If TRUE, save PNG plots to report directory
-  png... = list(),
-  default_color_fun = colorspace::rainbow_hcl,
-  x_var_lab = c(PMT_voltage = "PMT Voltage"),
-  y_var_lab = c(log10_CV = expression(paste(log[10], " CV"))),
-  plot_series... = list(),
   create_smooth_variables... = list(),
-  plot_derivative = FALSE,
-  points... = list(),
-  debug = FALSE,
-  round_to_nearest_volts = 1, # Round to nearest multiple of this value
+  round_to_nearest_volts = 10, # Round to nearest multiple of this value
   round_any_fun = round,
-  xlsx_expression = NULL,
-  ## Noli me tangere; when TRUE, used for IRR checks:
-  plot_individual_channels = FALSE
+  keep_derivatives = FALSE,
+  ...
 )
 {
-  if (save_png && !dir.exists(image_dir))
-    dir.create(image_dir, recursive = TRUE)
-
-  if (!is.null(report_dir) && !dir.exists(report_dir))
-    dir.create(report_dir, recursive = TRUE)
-
-  pngArgs <- list(
-    #width = 12.5,
-    width = 9.375,
-    height = 7.3,
-    units = "in",
-    res = 600
-  )
-  pngArgs <- utils::modifyList(pngArgs, png..., keep.null = TRUE)
-
-  x_var_lab <- head(x_var_lab, 1)
-  if (is_invalid(names(x_var_lab)) || trimws(names(x_var_lab)) == "") names(x_var_lab) <- x_var_lab
-  y_var_lab <- head(y_var_lab, 1)
-  if (is_invalid(names(y_var_lab)) || trimws(names(y_var_lab)) == "") names(y_var_lab) <- y_var_lab
-
-  ## Create plotting data set
+  ## Create tweaked voltration data set that includes curve inflection points
   r <- keystone::psapply(x,
     function(a)
     {
-      color <- keystone::wavelength2col(attr(a, "wavelength"))
-      defaultColor <- default_color_fun(length(color))
-      color[is.na(color)] <- defaultColor[is.na(color)]
-      experiment_name <- attr(a, "experiment_name"); if (is_invalid(experiment_name)) experiment_name <- "[no experiment_name]"
+      color <- attr(a, "color")
+      experiment_name <- attr(a, "experiment_name")
 
       cat(sprintf("Processing object: %s\n", experiment_name)); flush.console()
 
       y <- a %>%
-        naniar::replace_with_na_all(condition = eval(substitute(~ .x > MCT, list(MCT = max_cv_threshold)))) %>%
+        naniar::replace_with_na_all(condition =
+          eval(substitute(~ .x > MCT, list(MCT = max_cv_threshold)))) %>%
         dplyr::mutate_at(dplyr::vars(2:NCOL(.)), trans_fun) %>%
         naniar::replace_with_na_all(condition = replace_with_na_condition) %>%
         dplyr::mutate_at(dplyr::vars(2:NCOL(.)),
@@ -414,7 +254,8 @@ plot_peak2_data <- function(
           {
             if (keep_longest_continuous) {
               ## Keep all values in rightmost stretch
-              # ii <- b[b %>% keystone::na_unwrap()] %>% is.na %>% `!` %>% rle %>% `$`("lengths") %>% keystone::cum_sum() %>% `c`(1, .)
+              # ii <- b[b %>% keystone::na_unwrap()] %>% is.na %>% `!` %>% rle %>%
+              #   `$`("lengths") %>% keystone::cum_sum() %>% `c`(1, .)
               # i <- (ii[length(ii) - 1]):(length(b))
               # bb <- rep(NA_real_, length(b))
               # bb[i] <- b[i]
@@ -438,8 +279,8 @@ plot_peak2_data <- function(
           color <- color[notAllNas]
           y <- janitor::remove_empty(y, which = c("cols"))
 
-          warning("Channel(s) ", paste(names(notAllNas)[!notAllNas], sep = ","), " has invalid CVs for all quantities.",
-            immediate. = TRUE)
+          warning("Channel(s) ", paste(names(notAllNas)[!notAllNas], sep = ","),
+            " has invalid CVs for all quantities.", immediate. = TRUE)
         }
       }
 
@@ -450,25 +291,9 @@ plot_peak2_data <- function(
         if (dev.cur() >= 0L) dev.off()
       }
 
-      ### Do time-series plotting.
+      ### Find inflection point in voltration curve.
 
       #tryCatch({
-        plot_seriesArgs <- list(
-          x = y,
-          series = series,
-          x_var = "quantity",
-          log = "",
-          xlab = x_var_lab, ylab = y_var_lab,
-          main = experiment_name,
-          dev.new... = list(width = 9.375, height = 7.3),
-          col = color, lwd = 4,
-          trend = FALSE,
-          segmented = FALSE, segmented... = list(breakpoints... = list(h = 3)),
-          legend... = list(x = "topright")
-        )
-        plot_seriesArgs <-
-          utils::modifyList(plot_seriesArgs, plot_series..., keep.null = TRUE)
-
         ## Find smoothed series & derivative(s).
         deriv <- 1:2
         create_smooth_variablesArgs <- list(
@@ -511,10 +336,15 @@ plot_peak2_data <- function(
               y1 <- drop(keystone::interpNA(y1, method = "fmm", unwrap = FALSE))
             }
             checkCurve <- inflection::check_curve(x1, y1)
+            # plot(x1, y1, main = sprintf("%s - %s", experiment_name, i))
+            # mtext(sprintf("%s; index = %s; %s", checkCurve$ctype, checkCurve$index,
+            #   inflection::bese(x1, y1, index = checkCurve$index, doparallel = FALSE)$iplast)) # For debugging
             if (checkCurve$index == 1) { # This works! I should figure out why....
               bese <- inflection::bese(x1, y1, index = checkCurve$index, doparallel = FALSE)
-              j <- x1 >= bese$iplast
-              x1 <- x1[j]; y1 <- y1[j]
+              if (!is_invalid(bese$iplast)) {
+                j <- x1 >= bese$iplast
+                x1 <- x1[j]; y1 <- y1[j]
+              }
             }
             knee <- inflection::uik(x1, y1)
             cp <- keystone::nearest(x1, knee[1]) # Could just be 'cp <- knee[1]'.
@@ -528,123 +358,400 @@ plot_peak2_data <- function(
 
             r
           }, simplify = FALSE)
+        #changepoints_cv <- rep(list(list(x = 0, y = 0)), length(series))
       #}, error = Error) # Could add 'warning = Error'.
 
-      rv <- purrr::map_dfr(changepoints_cv, dataframe)
-      rownames(rv) <- names(changepoints_cv)
-      colnames(rv) <- c(names(x_var_lab), names(y_var_lab))
+      rv <- purrr::map_dfr(changepoints_cv, dataframe) %>%
+        dplyr::mutate(channel = names(changepoints_cv), .before = 1) %>%
+        dplyr::rename(inflection = "x")
 
-      if (plot_derivative) {} # See GitHub history for reimplementation if needed.
+      derivatives <- NULL
+      if (keep_derivatives)
+        derivatives <- sapply(zz, tibble::as_tibble, simplify = FALSE)
 
-      rv <- rv %>%
-        tibble::rownames_to_column(var = "channel") %>%
-        dplyr::mutate(
-          !!names(x_var_lab) := .data[[names(x_var_lab)]],
-          !!names(y_var_lab) := .data[[names(y_var_lab)]] %>% round(2)
-        )
+      structure(list(time_series = y, inflection_points = rv),
+        experiment_name = experiment_name, derivatives = derivatives)
+    }, simplify = FALSE)#, .parallel = FALSE)
 
-      structure(
-        list(plot_args = plot_seriesArgs, changepoints_cv = changepoints_cv, table = rv, experiment_name = experiment_name),
-        derivatives = sapply(zz, tibble::as_tibble, simplify = FALSE)
-      )
-    }, simplify = FALSE)
+  r
+}
 
-  ## Create plots
-  grobs <- list()
-  plyr::l_ply(seq_along(r),
-    function(a)
-    {
-      pngArgsCopy <- utils::modifyList(pngArgs,
-        ## N.B. 'sprintf(0)' returns 0-length string for any NULL values; use 'format(NULL)' to output "NULL".
-        list(filename = sprintf("%s/%03d - %s.png", format(image_dir), a, basename(r[[a]]$experiment_name))),
-        keep.null = TRUE)
 
-      pointsArgs <- list(
-        col = "black",
-        pch = 4, cex = 1,
-        lwd = 3
-      )
-      pointsArgs <- utils::modifyList(pointsArgs, points..., keep.null = TRUE)
+guess_channel_colors <- function(
+  x, # Vector of channel names, possibly w/ some laser-color info,
+  wavelength_re = formals(guess_parameters)$voltage_re,
+  col_fun = colorspace::rainbow_hcl
+)
+{
+  default_color_values <- col_fun(length(x))
+  default_cols <- default_color_values %>% grDevices::col2rgb() %>% plyr::alply(2, identity) %>%
+    `names<-`(NULL) %>% sapply(function(a) keystone::rgb2name(a["red"], a["green"], a["blue"]),
+      USE.NAMES = FALSE) %>% names
 
-      if (plot_individual_channels) {
-        for (i in seq_along(r[[a]]$plot_args$series)) {
-          plotArgsFlit <- rlang::duplicate(r[[a]]$plot_args, shallow = FALSE)
+  wavelengths <- stringr::str_extract(x, wavelength_re) %>% readr::parse_number()
 
-          pngArgsFlit <- rlang::duplicate(pngArgsCopy, shallow = FALSE)
-          pngArgsFlit$filename <-
-            sprintf("%s#%s.%s", tools::file_path_sans_ext(pngArgsFlit$filename),
-              fs::path_sanitize(plotArgsFlit$series[i], replacement = ";"), tools::file_ext(pngArgsFlit$filename))
+  cols <- Vectorize(keystone:::nm_to_rgb, "wavelength", SIMPLIFY = FALSE)(wavelengths) %>%
+    sapply(function(a) { if (is_invalid(a)) return (NA_character_); keystone::rgb2name(a$R, a$G, a$B) })
+  names(cols)[is.na(cols)] <- default_cols[is.na(cols)]
+  cols <- names(cols)
 
-          plotArgsFlit$series <- plotArgsFlit$series[i]
-          plotArgsFlit$col <- plotArgsFlit$col[i]
+  list(wavelength = wavelengths, color = cols)
+}
 
-          if (save_png) do.call(grDevices::png, pngArgsFlit)
 
-          do.call(keystone::plot_series, plotArgsFlit)
+## N.B. This is best run interactively
+#' @export
+prepare_data <- function(
+  x,
+  ..., # Passed on to 'guess_parameters()'
+  choose_excel = FALSE,
+  copy_params = TRUE
+)
+{
+  if (missing(x) || is_invalid(x)) {
+    if (interactive()) {
+      if (!choose_excel) {
+        msg <-
+r"---{
+Choose a top-level directory containing subdirectories named after the machines
+whose PMT voltages you wish to optimize; those subdirectories should in turn
+contain FCS files collected over the voltration range for each machine.
+}---"
+        message(msg); utils::flush.console()
+        #x <- keystone::choose_dir()
+        x <- svDialogs::dlg_dir()$res
 
-          do.call(points, pointsArgs %>% `[[<-`("x", r[[a]]$changepoints_cv[[i]]))
-
-          if (save_png) dev.off()
-          else grobs <<- append(grobs, list(grDevices::recordPlot()))
-        }
-
-        ## Don't create a report
-        report_dir <<- NULL
+        if (is_invalid(x))
+          stop("volta is unable to find a directory with FCS files")
       } else {
-        if (save_png) do.call(grDevices::png, pngArgsCopy)
+        msg <-
+r"---{
+Choose an Excel (XLS, XLSX) or CSV file that's been correctly prepared with
+volta parameters (machine, quantity, channels, path) for analyzing a set of FCS
+files collected over the voltration range for each machine.
+}---"
+        message(msg); utils::flush.console()
+        #x <- keystone::choose_files("xlsx", "xls", "csv")
+        x <- svDialogs::dlg_open(title = "Open volta parameters sheet",
+          filters = svDialogs::dlg_filters[c("xls", "csv"), ])$res
 
-        do.call(keystone::plot_series, r[[a]]$plot_args)
-
-        plyr::l_ply(r[[a]]$changepoints_cv,
-          function(b) { pointsArgs$x = b; do.call(points, pointsArgs) })
-
-        if (save_png) dev.off()
+        if (is_invalid(x))
+          stop("volta is unable to find a spreadsheet file")
       }
-    })
-
-  ## Make Peak 2 report.
-  if (!is.null(report_dir)) {
-    rr <- sapply(r, function(a) { a$table }, simplify = FALSE)
-    names(rr) <- stringr::str_trunc(basename(names(r)), 29, "center")
-
-    duplicateNames <- names(rr) %>% intersect(.[duplicated(.)])
-    for(i in duplicateNames) {
-      dupIndex <- which(names(rr) == i)
-      # Replace w/ sequential numbers:
-      names(rr)[dupIndex] <-
-        sapply(seq_along(dupIndex),
-          function(j) sprintf("%s_%01d", names(rr)[dupIndex[j]], j))
-    }
-
-    fileName <- paste(report_dir, basename(report_dir) %_% ".xlsx", sep = "/")
-    rio::export(rr, fileName, rowNames = FALSE)
-
-    wb <- xlsx::loadWorkbook(fileName)
-    keystone::poly_eval(xlsx_expression)
-
-    ## Add plots to report.
-    if (save_png) {
-      ss <- xlsx::getSheets(wb)
-      imageFiles <- list.files(report_dir, "^\\d{3} - .*?\\.png", full.names = TRUE, ignore.case = TRUE)
-
-      plyr::l_ply(seq_along(ss),
-        function(i) { xlsx::addPicture(imageFiles[i], ss[[i]], scale = 1, startRow = 1, startColumn = 4) })
-
-      xlsx::saveWorkbook(wb, fileName)
+    } else {
+      stop("A valid 'x' value must be provided to run this function non-interactively")
     }
   }
 
-  ## At this point, I could save 'grobs' & restore the plots later.
-  # browser()
-  # dev.new(width = 9.375, height = 7.3)
-  # print(length(grobs))
-  # grDevices::replayPlot(grobs[[1]])
-  # saveRDS(grobs, file = "./data/volta-irr-grobs.rds")
-  # g <- readRDS(file = "./data/volta-irr-grobs.rds")
-  # grDevices::replayPlot(g[[1]])
-  ## Collect the optimal voltages en masse:
-  # sapply(r, function(a) a$table$PMT_voltage, simplify = FALSE) %>% unlist %>%
-  #   keystone::dataframe(pmt_voltage = .) %>% `[`(1:60, , drop = FALSE)
+  ## Is 'x[1]' a valid path to an XLSX file? If so, skip parameter guessing.
+  is_spreadsheet <- FALSE
+  if (is.character(x) &&
+    stringr::str_detect(stringr::str_trim(tools::file_ext(x[1])),
+      stringr::regex("^(xlsx|xls|csv)$", ignore_case = TRUE))) {
+    is_spreadsheet <- TRUE
+    x <- x[1]
+  }
 
-  r
+  if (!is_spreadsheet)
+    params <- guess_parameters(path = x, ...)
+  else
+    params <- rio::import(x)
+
+  ## Have interactive user review 'params':
+  if (interactive()) {
+    msg <-
+r"---{
+------------------------------------------------------
+The volta parameters sheet for this analysis is ready.
+------------------------------------------------------
+You can:
+
+  • REVIEW or edit the parameters sheet
+  • SAVE sheet to file system for review or external editing
+  • CONTINUE volta analysis using this parameters sheet
+  • QUIT volta for now
+}---"
+
+    message(msg); utils::flush.console()
+    repeat {
+      choice <- keystone::ask_multiple_choice(c("Review", "Save", "Continue", "Quit"))
+
+      ## React to each possible choice:
+      switch(choice$lowercase,
+        quit = {
+          return (invisible(NULL))
+        },
+
+        review = {
+          msg <-
+r"---{
+After making changes to the parameter sheet, click the "synchronize" button,
+then click "Done". If no changes, click "Done" and return to the R console.
+}---"
+          message(msg); utils::flush.console()
+          keystone::press_enter_to_continue()
+
+          params <- DataEditR::data_edit(params)
+        },
+
+        save = {
+          defaultFileName <- sprintf("volta-parameters_%s",
+            keystone::make_current_timestamp(use_seconds = TRUE, seconds_sep = "+"))
+          params_path <- svDialogs::dlg_save(default = defaultFileName, title = "Save volta parameters sheet",
+            filters = svDialogs::dlg_filters[c("xls", "csv"), ])$res
+
+          rio::export(params, params_path)
+
+          msg <- paste0(
+r"---{
+To load this parameter sheet for a future volta analysis, use command:
+
+}---",
+            sprintf("prepare_data(\"%s\")\n", params_path))
+          message(msg); utils::flush.console()
+        },
+
+        continue = {
+          break
+        }
+      )
+    }
+  }
+
+  ## Copy 'params' to the package global variable
+  if (copy_params) {
+    current <- get(".volta", envir = asNamespace("volta"))
+    current$params <- params
+    assign(".volta", current, envir = asNamespace("volta"))
+  }
+
+  msg <- paste0(
+r"---{
+The volta parameter sheet is ready to use. To continue the analysis, type:
+
+}---",
+    "get_voltration_data()")
+  message(msg); utils::flush.console()
+
+  ## Invisibly return 'params' as a function value, too
+  invisible(params)
+}
+
+#' @export
+guess_parameters <- function(
+  path = ".", # If list, keep as is (check existence); vector gets processed
+  ## 'analysis_channels_re' is one of: 1-element regex/character vector;
+  ##   2+-element vector of channel names
+  analysis_channels_re = stringr::regex("^(?!.*?(fsc|ssc|time|ir)).*(?<!-(h|w))$", ignore_case = TRUE),
+  ## These calcs may rely on data stored in ad-hoc keywords
+  ##   for parameter n, e.g. PnV (_V_oltage), PnG (_G_ain):
+  cv_keyword_fmt = "$P%sV",
+  parse_quantity = expression(pData %>% dplyr::mutate(quantity = quantity %>% readr::parse_number())),
+  analysis_channels_sep = ",", quantity_sep = analysis_channels_sep,
+  channels_callback = NULL,
+  same_word = "SAME", spill_word = "SPILL",
+  use_spillover_channels = FALSE,
+  list.dirs... = list(),
+  list.files... = list(),
+  use_filename_voltage = TRUE,
+  voltage_re = "(?<=^|[^\\dA-Za-z])[1-9][\\d]{2}(?=[^\\dA-Za-z]|$)", default_voltage = 300
+)
+{
+  ## 'path' can be a list, or a vector mix of directory- & file paths; sort them out:
+  if (!is.list(path)) { # A list from 'prepare_data()' should be ready to go
+    pathAbo <- path
+    path <- sapply(path, tools::file_path_as_absolute, USE.NAMES = FALSE)
+    isDirectory <- sapply(path, function(a) utils::file_test("-d", a))
+    singleFiles <- structure(path[!isDirectory], .Names = dirname(path[!isDirectory])) %>% as.list
+    path <- path[isDirectory]
+
+    list.dirsArgs <- list(
+      path = path
+    )
+    list.dirsArgs <- utils::modifyList(list.dirsArgs, list.dirs...)
+    list.dirsPattern <- list.dirsArgs$pattern
+    list.dirsArgs$pattern <- NULL
+    dirPaths <- do.call(list.dirs, list.dirsArgs)
+
+    if (!is.null(list.dirsPattern))
+      dirPaths <- dirPaths[stringr::str_detect(dirPaths, list.dirsPattern)]
+
+    list.filesArgs <- list(
+      pattern = ".*?\\.fcs$",
+      full.names = TRUE,
+      recursive = FALSE,
+      ignore.case = TRUE
+    )
+
+    ff <- sapply(dirPaths,
+      function(i)
+      {
+        list.filesArgs$path = i
+        list.filesArgs <- utils::modifyList(list.filesArgs, list.files...)
+        filePaths <- do.call(keystone::list_files, list.filesArgs)
+
+        filePaths
+      }, simplify = FALSE) %>% purrr::compact() # Remove blank elements
+
+    ## Make sure any individual files actually in the same directory are grouped together:
+    ff <- purrr::reduce(list(ff, singleFiles), merge_named_list_elements)
+  } else {
+    ff <- path
+    ## TODO: Check all files for existence?
+  }
+
+  if (is_invalid(ff))
+    stop("No FCS files found")
+
+  d <- plyr::ldply(names(ff),
+    function(a)
+    {
+      machine <- basename(a) # 'machine' is required in the spreadsheet
+
+      dd <- plyr::ldply(ff[[a]],
+        function(fcs_path) # 'fcs_path' is required in the spreadsheet
+        {
+          fileName <- basename(fcs_path)
+          ## Can we guess the voltage/gain from the file name?
+          fileNameVG <- stringr::str_extract(fileName, voltage_re) # Use 'string_extract_all()' here?
+
+          ## Now let's get info from the file itself
+          fcs1 <- flowCore::read.FCS(
+            fcs_path,
+            truncate_max_range = FALSE,
+            ## Retrieve only single event, but keep parameters, keywords, & value from header of FCS file:
+            which.lines = 1,
+            transformation = FALSE,
+          )
+          keywords <- fcs1 %>% flowCore::keyword()
+
+          ## If we want to try & use keyword values of the quantity of interest:
+          pData <- fcs1 %>% flowCore::parameters() %>% flowCore::pData() %>%
+            tibble::rownames_to_column(var = "parameter") %>%
+            dplyr::mutate(
+              quantity_keyword = sprintf(cv_keyword_fmt, stringr::str_extract(parameter, "\\d+$")),
+              desc = dplyr::case_when(is.na(desc) ~ name, TRUE ~ desc)
+            ) %>%
+            dplyr::left_join(
+              keystone::dataframe(
+                parameter = .$parameter,
+                quantity =
+                  sapply(.$quantity_keyword,
+                    function(a) { r <- keywords[[a]]; if (is_invalid(r)) r <- NA_character_; r })
+              ), by = "parameter"
+            )
+
+          pData <- keystone::poly_eval(parse_quantity)
+
+          ## 'pData' should now look something like this:
+          #   parameter              name              desc  range minRange maxRange quantity_keyword quantity
+          # 1        $P1             FSC-A             FSC-A 262144     0.00   262143             $P1V      450
+          # 2        $P2             SSC-A             SSC-A 262144     0.00   262143             $P2V      200
+          # 3        $P3   Blue B 515/20-A   Blue B 515/20-A 262144   -63.84   262143             $P3V      250
+          # 4        $P4   Blue A 710/50-A   Blue A 710/50-A 262144  -111.00   262143             $P4V      250
+          # 5        $P5 Violet H 450/50-A Violet H 450/50-A 262144   -40.18   262143             $P5V      250
+          # 6        $P6 Violet G 550/40-A Violet G 550/40-A 262144   -48.02   262143             $P6V      250
+          # 7        $P7 Violet F 560/40-A Violet F 560/40-A 262144   -60.76   262143             $P7V      250
+          # 8        $P8 Violet E 585/42-A Violet E 585/42-A 262144   -48.02   262143             $P8V      250
+          # 9        $P9 Violet D 605/40-A Violet D 605/40-A 262144   -58.80   262143             $P9V      250
+          # 10      $P10 Violet C 660/40-A Violet C 660/40-A 262144   -56.84   262143            $P10V      250
+          # 11      $P11 Violet B 705/70-A Violet B 705/70-A 262144   -73.50   262143            $P11V      250
+          # 12      $P12 Violet A 780/60-A Violet A 780/60-A 262144   -58.80   262143            $P12V      250
+          # 13      $P13    Red C 660/20-A    Red C 660/20-A 262144   -34.16   262143            $P13V      250
+          # 14      $P14    Red B 710/50-A    Red B 710/50-A 262144   -31.11   262143            $P14V      250
+          # 15      $P15    Red A 780/60-A    Red A 780/60-A 262144   -44.53   262143            $P15V      250
+          # 16      $P16  Green E 575/25-A  Green E 575/25-A 262144   -47.30   262143            $P16V      250
+          # 17      $P17  Green D 610/20-A  Green D 610/20-A 262144   -38.70   262143            $P17V      250
+          # 18      $P18  Green C 660/40-A  Green C 660/40-A 262144   -49.88   262143            $P18V      250
+          # 19      $P19  Green B 710/50-A  Green B 710/50-A 262144   -48.16   262143            $P19V      250
+          # 20      $P20  Green A 780/40-A  Green A 780/40-A 262144   -47.30   262143            $P20V      250
+          # 21      $P21              Time              Time 262144     0.00   262143            $P21V       NA
+
+          ## Now, identify all the channels to be used in the analysis
+          if (is.numeric(analysis_channels_re)) {
+            analysis_channels <- flowCore::colnames(fcs1)[analysis_channels_re]
+          } else if (is.character(analysis_channels_re)) {
+            if (length(analysis_channels_re) > 1) {
+              analysis_channels <- sapply(analysis_channels_re,
+                function(b) stringr::str_subset(zz, stringr::regex(b, ignore_case = TRUE)), simplify = FALSE) %>%
+                unlist(use.names = FALSE) %>% unique
+            } else {
+              if (stringr::str_detect(analysis_channels_re, # Let's try the channels in the spillover matrix
+                stringr::regex(sprintf("^\\s*%s\\s*$", spill_word), ignore_case = TRUE))) {
+                ## Check for spillover matrix
+                spilloverKey <- names(keywords) %>% stringr::str_subset(stringr::regex("spill", ignore_case = TRUE))
+                hasSpilloverMatrix <- spilloverKey %>% `[[`(keywords, .) %>% is.matrix
+                if (hasSpilloverMatrix)
+                  analysis_channels <- spilloverKey %>% `[[`(keywords, .) %>% colnames
+                else # If no spillover matrix, default to using all channels:
+                  analysis_channels <- flowCore::colnames(fcs1)
+              } else {
+                analysis_channels <- stringr::str_subset(flowCore::colnames(fcs1), analysis_channels_re)
+              }
+            }
+          } else {
+            analysis_channels <- flowCore::colnames(fcs1)
+          }
+
+          analysis_channels <- intersect(analysis_channels, flowCore::colnames(fcs1))
+          if (is_invalid(analysis_channels))
+            analysis_channels <- flowCore::colnames(fcs1)
+
+          ## At this point, allow an expression or function "callback" for trickier channel extractions,
+          ##   using e.g. 'fileName', 'keywords', 'pData', 'analysis_channels'
+          keystone::poly_eval(channels_callback)
+
+          ## Now back to finding the voltage/gain quantities; start w/ info in 'pData':
+          pDataVG <- pData %>% dplyr::filter(name %in% analysis_channels) %>% dplyr::pull(quantity)
+          if (length(unique(pDataVG)) > 1)
+            probable_vg <- paste(pDataVG, collapse = quantity_sep)
+          else
+            probable_vg <- unique(pDataVG)
+
+          ## We should favor 'pDataVG', but if it doesn't work, here are some Hail Marys ...
+          if (use_filename_voltage || is_invalid(probable_vg)) {
+            ## If most of the channels are tested, then several keywords should contain the same voltage/gain:
+            keywordsVG <- sapply(keywords,
+              function(b) { if (!inherits(b, "character")) return (NA); stringr::str_extract(b, "^\\s*[1-9][\\d]0\\s*$") },
+              simplify = TRUE)
+            ## Return the most frequent voltage/gain-like number(s) among the keywords
+            probable_vg <- keystone::stat_mode(c(fileNameVG, keywordsVG) %>% readr::parse_number(), na.rm = TRUE)
+
+            ## Reluctantly, I'm going to assume that the file name is our best source:
+            if (use_filename_voltage && !is_invalid(fileNameVG))
+              probable_vg <- fileNameVG
+
+            ## These are sort of last resorts:
+            if (is_invalid(probable_vg)) {
+              probable_vg <- default_voltage
+              warning(sprintf("For machine %s, file %s: no voltage/gain value found; default of %s used",
+                machine, fileName, default_voltage))
+            }
+            if (length(probable_vg) > 1)
+              probable_vg <- sample(probable_vg, 1) # 'probable_vg' is required in the spreadsheet
+          }
+
+          analysis_channels <- # 'analysis_channels' is required in the spreadsheet
+            paste(analysis_channels, collapse = analysis_channels_sep)
+          ## To reverse: stringr::str_split_1(analysis_channels, analysis_channels_sep)
+
+          keystone::dataframe(
+            machine = machine,
+            quantity = probable_vg %>% as.character,
+            channels = analysis_channels,
+            path = fcs_path) %>% dplyr::arrange(quantity)
+        })
+
+      ii <- plyr::alply(dd, 1, function(a) { stringr::str_split_1(a$channels, analysis_channels_sep) %>%
+        sort %>% paste(collapse = analysis_channels_sep) }) %>% unlist(use.names = FALSE) %>%
+        as.factor %>% as.numeric %>% vctrs::vec_duplicate_id() %>% unique
+      same <- rep(same_word, NROW(dd)); same[ii] <- dd$channels[ii]
+      dd$channels <- same
+
+      dd
+    }
+  )
+
+  ## Return data frame defining parameters for entire volta analysis:
+  d
 }

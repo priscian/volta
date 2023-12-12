@@ -168,7 +168,7 @@ get_peak2_data <- function(
   ## 'use_spillover_channels' overrides 'analysis_channels_re' if TRUE;
   ##   if TRUE, use channel names from spillover matrix
   use_spillover_channels = FALSE,
-  create_pmm_data = FALSE,
+  create_si_data = FALSE,
   prepare_augmented_fcs_data... = list(),
   list.dirs... = list(),
   list.files... = list(),

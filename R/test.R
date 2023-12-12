@@ -21,3 +21,9 @@ test_volta <- function()
 }
 ## Save the resulting plot:
 # keystone::dev_print(file = "./Downloads/001 - Maecker & Trotter 2006.png", device = png, width = 9.375, height = 7.3, units = "in", res = 600)
+
+
+#' @export
+test_volta_2 <- function()
+{
+}
