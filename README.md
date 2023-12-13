@@ -63,8 +63,8 @@ from the R command line.
 *volta*'s installation directory includes Peak 2 FCS files from the URMC (Rochester, New York, USA) Flow Core's suite of instruments; featured are: Animal (BD LSR II), Dr. Teeth (BD LSRFortessa™), and Statler (BD FACSAria™ II)—guess the naming theme! Runs of Peak 2 beads at various voltages are stored in directories named after each machine. Let's assume that we have enough data to determine the minimum per-channel voltage for optimal resolution sensitivity for each instrument, and let's furthermore put *volta* into action finding those voltages for us.
 
 ```r
-options(keystone_parallel = TRUE)
-options(volta_interactive_off = TRUE)
+options(keystone_parallel = TRUE) # Allow parallel processing via the "future" package
+options(volta_interactive_off = TRUE) # Turn off the interactive R console "wizard"
 library(volta)
 ## Create parameters sheet for voltration analysis from FCS files
 p <- prepare_data(system.file("extdata/peak2-fcs", package = "volta"))
@@ -84,7 +84,7 @@ plot_voltration_data(v)
 
 ![Results of volta run on URMC Peak 2 data: Statler.](<inst/images/004 - Statler.png>)
 
-### Function return value
+### Detail of return value from function `get_voltration_data()`
 <!--<br/>-->
 [//]: <br/>
 
@@ -155,7 +155,15 @@ $`Peak 2 statler LN Z01 122221`
 17  Green A 780/60-A         590 2.2966084
 ```
 
-### Function signatures
+## Interactive session
+<!--<br/>-->
+[//]: <br/>
+
+If `options(volta_interactive_off = FALSE)` or it isn't set, *volta* runs in interactive mode on the R console. (Use `options(volta_interactive_off = TRUE)` before starting a session to turn off *volta*'s interactive mode.) Interactive mode will try to guide the user through a complete analysis in as simple a manner as possible.
+
+![Complete interactive session of volta on R console.](<inst/images/volta-1.0.0-interactive-session-cropped.png>)
+
+## Function signatures
 <!--<br/>-->
 [//]: <br/>
 

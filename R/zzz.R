@@ -38,7 +38,7 @@ r"---{__       ______________________      ___
   \ \_/ / /_/ / /___/ /  / _____ \  /
    \___/_____/_____/_/  /_/    /\_\/
                              _/ /}---",
-sprintf("\nVersion %-12s        /__/\n", packageVersion("volta")),
+sprintf("\nVersion %-12s        /__/\n", as.character(packageVersion("volta"))),
 r"---{https://CART.urmc.edu      //
                           /'
 Type 'citation("volta")' to acknowledge this R package in publications.
