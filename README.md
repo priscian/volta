@@ -28,7 +28,7 @@ Here's the test code in detail:
 ### Maecker & Trotter 2006
 
 options(keystone_parallel = TRUE)
-.reload_all("volta"); library(magrittr)
+library("volta"); library(magrittr)
 e <- new.env()
 load(system.file("extdata/peak2-maecker+trotter2006_2019-09-19+54111.RData",
   package = "volta"), envir = e)
