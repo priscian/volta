@@ -41,11 +41,14 @@ plot_voltration_data <- function(
   plot_individual_channels = FALSE
 )
 {
+  volta_interactive_off <-
+    !(is.null(getOption("volta_interactive_off")) || !getOption("volta_interactive_off"))
+
   if (missing(x) || is_invalid(x)) {
     x <- .volta$results
   }
 
-  if (interactive() && is_invalid(report_path)) {
+  if (interactive() && !volta_interactive_off && is_invalid(report_path)) {
     msg <-
 r"---{
 Choose a directory & file name for the report spreadsheet, or click [cancel]
@@ -167,7 +170,7 @@ to plot the experiments' results directly to the graphics device.
       }
     })
 
-  if (interactive() && save_png) {
+  if (interactive() && !volta_interactive_off && save_png) {
     msg <- paste0(
 r"---{
 The volta summary images have been generated in directory:
@@ -221,7 +224,7 @@ The volta summary images have been generated in directory:
       xlsx::saveWorkbook(wb, fileName)
     }
 
-    if (interactive()) {
+    if (interactive() && !volta_interactive_off) {
       msg <- paste0(
 r"---{
 The volta report has been generated & can be found here:
@@ -255,11 +258,45 @@ The volta report has been generated & can be found here:
 
 #' @export
 plot.volta <- function(
- x,
- ...
+  x,
+  x_var_lab = c(PMT_voltage = "PMT Voltage"),
+  ## N.B. 'names(y_var_lab)' will correctly extract "log10_CV":
+  y_var_lab = c(log10_CV = expression(paste(log[10], " CV"))),
+  points... = list(),
+  ...
 )
 {
+  plot_data <- attr(x, "plot_data")
+  experiment_name <- attr(plot_data, "experiment_name")
 
+  plot_seriesArgs <- list(
+    x = plot_data$time_series,
+    series = names(plot_data$time_series)[-1],
+    x_var = names(plot_data$time_series)[1],
+    log = "",
+    xlab = x_var_lab, ylab = y_var_lab,
+    main = experiment_name,
+    dev.new... = list(width = 9.375, height = 7.3),
+    col = attr(x, "color"), lwd = 4,
+    trend = FALSE,
+    segmented = FALSE, segmented... = list(breakpoints... = list(h = 3)),
+    legend... = list(x = "topright")
+  )
+
+  pointsArgs <- list(
+    col = "black",
+    pch = 4, cex = 1,
+    lwd = 3
+  )
+  pointsArgs <- utils::modifyList(pointsArgs, points..., keep.null = TRUE)
+
+  plot_seriesArgs <-
+    utils::modifyList(plot_seriesArgs, list(...), keep.null = TRUE)
+  do.call(keystone::plot_series, plot_seriesArgs)
+
+  changepoints_cv <- plot_data$inflection_points %>%
+    dplyr::select(-channel) %>% data.matrix
+  do.call(points, pointsArgs %>% `[[<-`("x", changepoints_cv))
 }
 
 

@@ -64,10 +64,15 @@ get_voltration_data <- function(
   ... # Arguments for function 'find_inflection_point()'
 )
 {
+  volta_interactive_off <-
+    !(is.null(getOption("volta_interactive_off")) || !getOption("volta_interactive_off"))
+
   if (missing(x) || is_invalid(x)) {
     params <- .volta$params
   } else if (is.character(x)) {
     params <- rio::import(x)
+  } else {
+    params <- x
   }
 
   ## Expand parameters data to streamline voltration analysis
@@ -197,7 +202,8 @@ get_voltration_data <- function(
   fip <- find_inflection_point(p2, ...)
 
   p2 <- sapply(names(p2),
-    function(i) { structure(p2[[i]], plot_data = fip[[i]]) %>% keystone::add_class("volta") })
+    function(i) { structure(p2[[i]], plot_data = fip[[i]]) %>% keystone::add_class("volta") },
+    simplify = FALSE)
 
   ## Copy 'p2' to the package global variable
   if (copy_results) {
@@ -206,15 +212,13 @@ get_voltration_data <- function(
     assign(".volta", current, envir = asNamespace("volta"))
   }
 
-  if (interactive()) {
-    msg <- paste0(
+  msg <- paste0(
 r"---{
 The volta results are ready to plot. To continue the analysis, type:
 
 }---",
       "plot_voltration_data(save_png = TRUE)")
-    message(msg); utils::flush.console()
-  }
+  message(msg); utils::flush.console()
 
   invisible(p2)
 }
@@ -408,8 +412,11 @@ prepare_data <- function(
   copy_params = TRUE
 )
 {
+  volta_interactive_off <-
+    !(is.null(getOption("volta_interactive_off")) || !getOption("volta_interactive_off"))
+
   if (missing(x) || is_invalid(x)) {
-    if (interactive()) {
+    if (interactive() && !volta_interactive_off) {
       if (!choose_excel) {
         msg <-
 r"---{
@@ -458,7 +465,7 @@ files collected over the voltration range for each machine.
     params <- rio::import(x)
 
   ## Have interactive user review 'params':
-  if (interactive()) {
+  if (interactive() && !volta_interactive_off) {
     msg <-
 r"---{
 ------------------------------------------------------
