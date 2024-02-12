@@ -88,7 +88,7 @@ plot_voltration_data(v)
 <!--<br/>-->
 [//]: <br/>
 
-```r
+```rconsole
 ## Show table of CV-vs-V inflection points for each channel & each instrument
 > sapply(v, function(a) attr(a, "plot_data")$inflection_points %>%
 +   dplyr::rename(PMT_voltage = 2, log10_CV = 3), simplify = FALSE)
