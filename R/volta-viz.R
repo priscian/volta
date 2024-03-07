@@ -66,7 +66,7 @@ to plot the experiments' results directly to the graphics device.
   if (!is_invalid(report_path) && is.character(report_path))
     createReport <- TRUE
 
-  report_dir <- dirname(as.character(report_path))
+  report_dir <- keystone::normalize_path(dirname(as.character(report_path)))
   if (is_invalid(image_dir)) {
     image_dir <- report_dir
     if (is_invalid(image_dir))
@@ -95,7 +95,7 @@ to plot the experiments' results directly to the graphics device.
 
   ## Create plots
   grobs <- list()
-  plyr::l_ply(seq_along(x),
+  imagePaths <- sapply(seq_along(x),
     function(a)
     {
       plot_data <- attr(x[[a]], "plot_data")
@@ -117,10 +117,9 @@ to plot the experiments' results directly to the graphics device.
       plot_seriesArgs <-
         utils::modifyList(plot_seriesArgs, plot_series..., keep.null = TRUE)
 
-      pngArgsCopy <- utils::modifyList(pngArgs,
-        ## N.B. 'sprintf(0)' returns 0-length string for any NULL values; use 'format(NULL)' to output "NULL".
-        list(filename = sprintf("%s/%03d - %s.png", format(image_dir), a, basename(experiment_name))),
-        keep.null = TRUE)
+      ## N.B. 'sprintf(0)' returns 0-length string for any NULL values; use 'format(NULL)' to output "NULL".
+      filepath <- sprintf("%s/%03d - %s.png", format(image_dir), a, basename(experiment_name))
+      pngArgsCopy <- utils::modifyList(pngArgs, list(filename = filepath), keep.null = TRUE)
 
       pointsArgs <- list(
         col = "black",
@@ -168,7 +167,9 @@ to plot the experiments' results directly to the graphics device.
 
         if (save_png) dev.off()
       }
-    })
+
+      return (filepath)
+    }, simplify = TRUE)
 
   if (interactive() && !volta_interactive_off && save_png) {
     msg <- paste0(
@@ -214,8 +215,9 @@ The volta summary images have been generated in directory:
     ## Add plots to report.
     if (save_png) {
       ss <- xlsx::getSheets(wb)
-      imageFiles <-
-        list.files(image_dir, "^\\d{3} - .*?\\.png", full.names = TRUE, ignore.case = TRUE)
+      # imageFiles <-
+      #   list.files(image_dir, "^\\d{3} - .*?\\.png", full.names = TRUE, ignore.case = TRUE)
+      imageFiles <- imagePaths
 
       plyr::l_ply(seq_along(ss),
         function(i) { xlsx::addPicture(imageFiles[i], ss[[i]], scale = 1, startRow = 1,
